@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PolyMarket CopyBot PRO</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <!-- Header -->
+  <header id="header">
+    <div class="header-left">
+      <h1>PolyMarket CopyBot PRO</h1>
+      <span id="bot-status" class="status-badge idle">&#9679; Idle</span>
+    </div>
+    <div class="header-right">
+      <span id="wallet-address" class="wallet">Not connected</span>
+      <span id="usdc-balance" class="balance">USDC: --</span>
+      <span id="matic-balance" class="balance">MATIC: --</span>
+      <button id="btn-settings" class="btn btn-secondary">&#9881; Settings</button>
+      <button id="btn-toggle-bot" class="btn btn-danger">&#9632; Stop</button>
+    </div>
+  </header>
+
+  <!-- Setup Wizard (hidden by default, shown on first visit) -->
+  <section id="setup-wizard" class="hidden">
+    <!-- Will be populated by settings.js in Stage 6 -->
+  </section>
+
+  <!-- Main Dashboard -->
+  <main id="dashboard">
+    <!-- Metrics Row -->
+    <section id="metrics-row" class="metrics-grid">
+      <!-- 4 metric cards inserted by dashboard.js -->
+    </section>
+
+    <!-- P&L Chart -->
+    <section id="chart-section" class="card">
+      <div class="card-header">
+        <h2>P&amp;L Chart</h2>
+        <div class="chart-period-toggles">
+          <button class="period-btn active" data-period="1h">1H</button>
+          <button class="period-btn" data-period="24h">24H</button>
+          <button class="period-btn" data-period="7d">7D</button>
+          <button class="period-btn" data-period="30d">30D</button>
+          <button class="period-btn" data-period="all">ALL</button>
+        </div>
+      </div>
+      <canvas id="pnl-chart" height="200"></canvas>
+    </section>
+
+    <!-- Two column: Traders + Live Feed -->
+    <section class="two-columns">
+      <div id="traders-section" class="card">
+        <h2>Tracked Traders</h2>
+        <div id="traders-list">
+          <!-- Populated by traders.js -->
+        </div>
+      </div>
+      <div id="live-feed-section" class="card">
+        <h2>Live Trade Feed</h2>
+        <div id="live-feed">
+          <p class="empty-state">Waiting for trades...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trade Log Table -->
+    <section id="trade-log-section" class="card">
+      <div class="card-header">
+        <h2>Trade Log</h2>
+        <div class="trade-log-controls">
+          <input type="text" id="trade-search" placeholder="Search..." class="input-search">
+          <select id="trade-filter" class="select-filter">
+            <option value="all">All</option>
+            <option value="filled">Filled</option>
+            <option value="simulated">Simulated</option>
+            <option value="failed">Failed</option>
+            <option value="skipped">Skipped</option>
+          </select>
+          <button id="btn-export-csv" class="btn btn-small">Export CSV</button>
+        </div>
+      </div>
+      <div class="table-wrapper">
+        <table id="trade-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Trader</th>
+              <th>Market</th>
+              <th>Side</th>
+              <th>Outcome</th>
+              <th>Amount</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="trade-log-body">
+            <!-- Populated by trades.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Open Positions -->
+    <section id="positions-section" class="card">
+      <div class="card-header">
+        <h2>Open Positions</h2>
+        <span id="positions-total-value">Total: --</span>
+      </div>
+      <div class="table-wrapper">
+        <table id="positions-table">
+          <thead>
+            <tr>
+              <th>Market</th>
+              <th>Outcome</th>
+              <th>Shares</th>
+              <th>Avg Price</th>
+              <th>Current</th>
+              <th>P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody id="positions-body">
+            <!-- Populated by app.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Settings Modal (Stage 6) -->
+  <div id="settings-modal" class="modal hidden">
+    <!-- Will be populated by settings.js in Stage 6 -->
+  </div>
+
+  <!-- Footer -->
+  <footer id="footer">
+    <span id="uptime">Uptime: --</span>
+    <span id="poll-interval">Polling: 30s</span>
+    <span>v2.0.0</span>
+  </footer>
+
+  <!-- Scripts -->
+  <script type="module" src="/js/dashboard.js"></script>
+  <script type="module" src="/js/traders.js"></script>
+  <script type="module" src="/js/trades.js"></script>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
