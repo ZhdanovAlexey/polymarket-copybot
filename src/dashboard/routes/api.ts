@@ -117,6 +117,18 @@ apiRouter.get('/positions', (_req, res) => {
   }
 });
 
+// GET /api/pnl-history?period=24h
+apiRouter.get('/pnl-history', (req, res) => {
+  try {
+    const period = (req.query.period as string) || '24h';
+    const snapshots = queries.getSnapshots({ period });
+    res.json(snapshots);
+  } catch (err) {
+    log.error({ err }, 'Failed to get P&L history');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // GET /api/activity?type=trade&limit=50
 apiRouter.get('/activity', (req, res) => {
   try {

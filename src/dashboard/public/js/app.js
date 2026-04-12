@@ -14,6 +14,7 @@
 import { initDashboard, updateMetrics } from './dashboard.js';
 import { initTraders, updateTraders } from './traders.js';
 import { initTrades, updateTrades, addTrade } from './trades.js';
+import { initSettings, checkFirstRun } from './settings.js';
 
 const API_BASE = '';
 const REFRESH_INTERVAL_MS = 10_000;
@@ -40,11 +41,13 @@ document.addEventListener('DOMContentLoaded', () => {
   initDashboard();
   initTraders();
   initTrades();
+  initSettings();
   initChart();
   wireButtons();
   refreshAll();
   startRefreshLoop();
   startUptimeTicker();
+  checkFirstRun();
 });
 
 /* ================================================================
@@ -329,15 +332,8 @@ async function refreshChart() {
    ================================================================ */
 
 function wireButtons() {
-  const settingsBtn = document.getElementById('btn-settings');
+  // Settings button is handled by settings.js (initSettings/wireSettingsModal)
   const toggleBtn = document.getElementById('btn-toggle-bot');
-
-  if (settingsBtn) {
-    settingsBtn.addEventListener('click', () => {
-      const modal = document.getElementById('settings-modal');
-      if (modal) modal.classList.toggle('hidden');
-    });
-  }
 
   if (toggleBtn) {
     toggleBtn.addEventListener('click', async () => {

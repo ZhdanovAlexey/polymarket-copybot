@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { apiRouter } from './routes/api.js';
+import { authRouter } from './routes/auth.js';
+import { sseRouter } from './routes/sse.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const log = createLogger('dashboard');
@@ -23,6 +25,8 @@ export function createDashboardServer(): express.Express {
 
   // API routes
   app.use('/api', apiRouter);
+  app.use('/api/auth', authRouter);
+  app.use('/api/sse', sseRouter);
 
   // Static files
   const publicDir = resolve(__dirname, 'public');

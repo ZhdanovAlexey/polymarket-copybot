@@ -5,6 +5,109 @@ import type { OrderBookResponse } from '../types.js';
 
 const log = createLogger('clob-client');
 
+/**
+ * Derive or create CLOB API keys from the wallet private key.
+ * Saves the credentials to .env and returns them.
+ */
+export async function initClobClientWithAuth(): Promise<{
+  apiKey: string;
+  secret: string;
+  passphrase: string;
+} | null> {
+  try {
+    const { ethers } = await import('ethers');
+    const { ClobClient } = await import('@polymarket/clob-client');
+
+    // Read private key from process.env or .env file
+    let privateKey = process.env.PRIVATE_KEY;
+    if (!privateKey) {
+      privateKey = await readEnvValue('PRIVATE_KEY');
+    }
+    if (!privateKey) {
+      log.error('No PRIVATE_KEY found in environment or .env file');
+      return null;
+    }
+
+    // Create ethers wallet (v5)
+    const wallet = new ethers.Wallet(privateKey);
+    const address = wallet.address;
+
+    log.info({ address }, 'Initializing CLOB client for key derivation');
+
+    // Chain ID 137 = Polygon mainnet
+    const chainId = 137;
+
+    // Create CLOB client with signer (no creds yet)
+    const client = new ClobClient(
+      config.clobHost,
+      chainId,
+      wallet,          // signer (ethers.Wallet implements _signTypedData + getAddress)
+      undefined,       // no creds yet
+      undefined,       // signatureType (default EOA = 0)
+      address,         // funderAddress
+    );
+
+    // Derive or create API key
+    const creds = await client.createOrDeriveApiKey();
+
+    log.info('API keys derived successfully');
+
+    // Save credentials to .env
+    await writeEnvValue('CLOB_API_KEY', creds.key);
+    await writeEnvValue('CLOB_SECRET', creds.secret);
+    await writeEnvValue('CLOB_PASSPHRASE', creds.passphrase);
+
+    return {
+      apiKey: creds.key,
+      secret: creds.secret,
+      passphrase: creds.passphrase,
+    };
+  } catch (err) {
+    log.error({ err }, 'Failed to initialize CLOB client with auth');
+    return null;
+  }
+}
+
+// Helper: read a value from the .env file directly
+async function readEnvValue(key: string): Promise<string | undefined> {
+  const { readFileSync, existsSync } = await import('node:fs');
+  const { resolve, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const envPath = resolve(projectRoot, '.env');
+
+  if (!existsSync(envPath)) return undefined;
+
+  const content = readFileSync(envPath, 'utf-8');
+  const match = content.match(new RegExp(`^${key}=(.*)$`, 'm'));
+  return match?.[1] || undefined;
+}
+
+// Helper: write a value to the .env file
+async function writeEnvValue(key: string, value: string): Promise<void> {
+  const { readFileSync, writeFileSync, existsSync } = await import('node:fs');
+  const { resolve, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const envPath = resolve(projectRoot, '.env');
+
+  let content = '';
+  if (existsSync(envPath)) {
+    content = readFileSync(envPath, 'utf-8');
+  }
+
+  const regex = new RegExp(`^${key}=.*$`, 'm');
+  if (regex.test(content)) {
+    content = content.replace(regex, `${key}=${value}`);
+  } else {
+    content += `\n${key}=${value}`;
+  }
+
+  writeFileSync(envPath, content);
+}
+
 // Read-only CLOB client for public endpoints
 export class ClobClientWrapper {
   private baseUrl: string;
