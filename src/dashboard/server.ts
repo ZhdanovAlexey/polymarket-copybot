@@ -36,8 +36,8 @@ export function createDashboardServer(): express.Express {
   const publicDir = resolve(__dirname, 'public');
   app.use(express.static(publicDir));
 
-  // SPA fallback
-  app.get('*', (req, res) => {
+  // SPA fallback (Express 5 requires named wildcard)
+  app.get('/{*path}', (req, res) => {
     res.sendFile(resolve(publicDir, 'index.html'));
   });
 
