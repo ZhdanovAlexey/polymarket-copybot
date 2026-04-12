@@ -237,3 +237,58 @@ apiRouter.post('/settings', (req, res) => {
     res.status(500).json({ error: (err as Error).message });
   }
 });
+
+// === Strategy endpoints ===
+
+// GET /api/strategy/recommendations
+apiRouter.get('/strategy/recommendations', async (_req, res) => {
+  try {
+    const { ParameterOptimizer } = await import('../../core/strategy/optimizer.js');
+    const optimizer = new ParameterOptimizer();
+    const recs = optimizer.getRecommendations();
+    res.json(recs);
+  } catch (err) {
+    log.error({ err }, 'Failed to get strategy recommendations');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/strategy/anomalies?limit=50&severity=...&trader=...
+apiRouter.get('/strategy/anomalies', async (req, res) => {
+  try {
+    const { AnomalyDetector } = await import('../../core/strategy/anomaly.js');
+    const detector = new AnomalyDetector();
+    const limit = parseInt(req.query.limit as string) || 50;
+    const severity = req.query.severity as string | undefined;
+    const traderAddress = req.query.trader as string | undefined;
+
+    const alerts = detector.getAlerts({ limit, severity, traderAddress });
+    res.json(alerts);
+  } catch (err) {
+    log.error({ err }, 'Failed to get anomaly alerts');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/strategy/performance
+apiRouter.get('/strategy/performance', (_req, res) => {
+  try {
+    const allPerf = queries.getAllPerformance();
+    res.json(allPerf);
+  } catch (err) {
+    log.error({ err }, 'Failed to get strategy performance');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/strategy/rotations?limit=50
+apiRouter.get('/strategy/rotations', (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const rotations = queries.getRotations(limit);
+    res.json(rotations);
+  } catch (err) {
+    log.error({ err }, 'Failed to get rotations');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
