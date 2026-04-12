@@ -1,10 +1,19 @@
 import { Router, type Router as RouterType } from 'express';
 import { createLogger } from '../../utils/logger.js';
+import { config } from '../../config.js';
 import * as queries from '../../db/queries.js';
 import type { ApiStatusResponse, ApiMetricsResponse } from '../../types.js';
+import type { Bot } from '../../core/bot.js';
 
 const log = createLogger('api');
 export const apiRouter: RouterType = Router();
+
+// Bot instance reference — set from index.ts via setBot()
+let bot: Bot | null = null;
+
+export function setBot(b: Bot): void {
+  bot = b;
+}
 
 // Track bot state (will be wired to Bot class in stage 10)
 let botStartTime: number | null = null;
@@ -138,6 +147,93 @@ apiRouter.get('/activity', (req, res) => {
     res.json(activities);
   } catch (err) {
     log.error({ err }, 'Failed to get activity');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/bot/start
+apiRouter.post('/bot/start', async (_req, res) => {
+  try {
+    if (!bot) {
+      res.status(500).json({ error: 'Bot not initialized' });
+      return;
+    }
+
+    const status = bot.getStatus();
+    if (status.running) {
+      res.json({ ok: true, message: 'Bot already running', ...status });
+      return;
+    }
+
+    await bot.start();
+    res.json({ ok: true, message: 'Bot started', ...bot.getStatus() });
+  } catch (err) {
+    log.error({ err }, 'Failed to start bot');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/bot/stop
+apiRouter.post('/bot/stop', async (_req, res) => {
+  try {
+    if (!bot) {
+      res.status(500).json({ error: 'Bot not initialized' });
+      return;
+    }
+
+    const status = bot.getStatus();
+    if (!status.running) {
+      res.json({ ok: true, message: 'Bot already stopped', ...status });
+      return;
+    }
+
+    await bot.stop();
+    res.json({ ok: true, message: 'Bot stopped', ...bot.getStatus() });
+  } catch (err) {
+    log.error({ err }, 'Failed to stop bot');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/settings
+apiRouter.get('/settings', (_req, res) => {
+  try {
+    res.json({
+      dryRun: config.dryRun,
+      betSizeUsd: config.betSizeUsd,
+      maxSlippagePct: config.maxSlippagePct,
+      pollIntervalMs: config.pollIntervalMs,
+      topTradersCount: config.topTradersCount,
+      leaderRefreshIntervalMs: config.leaderRefreshIntervalMs,
+      dailyLossLimitUsd: config.dailyLossLimitUsd,
+      maxOpenPositions: config.maxOpenPositions,
+      minMarketLiquidity: config.minMarketLiquidity,
+      redeemCheckIntervalMs: config.redeemCheckIntervalMs,
+      sellMode: config.sellMode,
+    });
+  } catch (err) {
+    log.error({ err }, 'Failed to get settings');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/settings
+apiRouter.post('/settings', (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    const saved: string[] = [];
+
+    for (const [key, value] of Object.entries(body)) {
+      if (value != null) {
+        queries.setSetting(key, String(value));
+        saved.push(key);
+      }
+    }
+
+    log.info({ saved }, 'Settings updated');
+    res.json({ ok: true, saved });
+  } catch (err) {
+    log.error({ err }, 'Failed to save settings');
     res.status(500).json({ error: (err as Error).message });
   }
 });
