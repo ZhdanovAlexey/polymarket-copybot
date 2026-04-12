@@ -9,6 +9,7 @@ const log = createLogger('main');
 
 // Singleton bot instance
 let bot: Bot | null = null;
+let isShuttingDown = false;
 
 async function main(): Promise<void> {
   log.info('=== PolyMarket CopyBot PRO ===');
@@ -39,7 +40,10 @@ async function main(): Promise<void> {
 }
 
 async function shutdown(): Promise<void> {
-  log.info('Graceful shutdown initiated...');
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  log.info('Shutting down gracefully...');
 
   if (bot) {
     try {
@@ -57,6 +61,15 @@ async function shutdown(): Promise<void> {
 // Graceful shutdown handlers
 process.on('SIGTERM', () => { void shutdown(); });
 process.on('SIGINT', () => { void shutdown(); });
+
+// Error boundaries — log and continue, don't crash
+process.on('uncaughtException', (err) => {
+  log.error({ err }, 'Uncaught exception');
+});
+
+process.on('unhandledRejection', (reason) => {
+  log.error({ err: reason }, 'Unhandled rejection');
+});
 
 main().catch((err) => {
   log.fatal({ err }, 'Fatal error during startup');
