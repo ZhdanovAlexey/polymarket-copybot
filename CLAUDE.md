@@ -3,6 +3,8 @@
 ## Project Status
 All code is implemented (12 stages, 40 source files, ~16.5k lines TS/JS). TypeScript compiles with 0 errors.
 **What remains:** manual testing and verification. See `STATUS.md` for the full TODO checklist.
+Demo account (paper trading) mode implemented: virtual balance, commission tracking, reset, live prices.
+Settings hot-reload without server restart. Polymarket API v1 migration complete.
 Known improvements: backtest frontend page, WebSocket support, unit tests.
 
 ## How to start working
@@ -38,11 +40,17 @@ pnpm start        # Run compiled JS (production)
 **Bot orchestrator:** `src/core/bot.ts` — `start()` fetches leaderboard, initializes tracker polling, starts redeemer, schedules PnL snapshots. `stop()` cleans up all timers. Wires: Leaderboard → Tracker → Executor → Portfolio.
 
 **Trade pipeline:**
-- `src/core/leaderboard.ts` — composite scoring, save/load from DB
-- `src/core/tracker.ts` — EventEmitter, polls Data API per trader, emits `newTrade`
-- `src/core/executor.ts` — BUY/SELL with dry-run and real modes, lazy auth ClobClient
+- `src/core/leaderboard.ts` — composite scoring (PnL 40% + WinRate 25% + Volume 15% + Trades 10% + Consistency 10%); negative PnL uses signed-log so losing traders are penalised (not floored to 0). Fetches `max(30, topN*3)` to absorb enrichment failures + activity-filter dropouts, sorts by `score DESC`, slices top N. Manual refresh via `bot.refreshLeaderboardNow()` / `POST /api/bot/refresh-leaderboard`; auto-triggered when user changes `top_traders_count`/`leaderboard_period`/`min_trader_volume` in Settings.
+- `src/core/tracker.ts` — EventEmitter, polls Data API per trader (active + exit-only), emits `newTrade`
+- `src/core/executor.ts` — BUY/SELL with dry-run (demo account with virtual balance + commission) and real modes, lazy auth ClobClient. Ignores BUY from exit-only traders. BUY size can be proportional to trader's USD: when `bet_sizing_mode = proportional`, `our_usd = betSize × clamp(trader_usd / anchor, min, max)` (defaults: anchor $100, min 1×, max 5×). Falls back to fixed `betSizeUsd` when mode=fixed or trader usdValue missing.
+- `src/core/redeemer.ts` — auto-redeems resolved markets on `config.redeemCheckIntervalMs` cadence. Real mode: `ctf.redeemPositions` on-chain via ethers v5. Demo mode: polls CLOB `/markets/{conditionId}`, uses `tokens[].winner` flag to credit demo balance ($1/share for winner, $0 for loser), marks position `status='redeemed'`, writes a `side='REDEEM'` entry to trades. Demo-redeem attributes each trade to the opener trader (`queries.getOpeningTraderForToken`) to satisfy `trades.trader_address` FK.
 - `src/core/risk-manager.ts` — daily limit, max positions, slippage, liquidity checks
 - `src/core/portfolio.ts` — position tracking, avg price recalculation
+
+**Trader states** (`tracked_traders.active`, `tracked_traders.exit_only`):
+- `active=1, exit_only=0` — normal: copies BUY + SELL (top-N after leaderboard refresh)
+- `active=0, exit_only=1` — exit-only: tracker polls, only SELL signals executed (trader dropped out of top-N or manually removed while holding linked positions)
+- `active=0, exit_only=0` — not tracked. Traders auto-transition from exit-only to this state once all positions opened via their BUYs are closed (see `bot.ts:cleanupExitOnlyIfEmpty` and `bot.ts:reconcileDroppedTraders`).
 
 **API wrappers:**
 - `src/api/data-api.ts` — DataApi class (public, no auth)

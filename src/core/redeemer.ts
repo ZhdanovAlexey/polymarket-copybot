@@ -1,8 +1,11 @@
 import { config } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { DataApi } from '../api/data-api.js';
+import { ClobClientWrapper } from '../api/clob-client.js';
 import * as queries from '../db/queries.js';
 import { broadcastEvent } from '../dashboard/routes/sse.js';
+import { sleep } from '../utils/helpers.js';
+import type { BotPosition, TradeResult } from '../types.js';
 
 const log = createLogger('redeemer');
 
@@ -40,6 +43,14 @@ export class Redeemer {
   }
 
   private async checkAndRedeem(): Promise<void> {
+    // Demo mode uses a different pipeline: we don't have on-chain positions,
+    // so instead we inspect our local open positions and check each market's
+    // resolution status via Gamma + CLOB midpoint.
+    if (config.dryRun) {
+      await this.checkAndRedeemDemo();
+      return;
+    }
+
     try {
       const address = queries.getSetting('wallet_address');
       if (!address) {
@@ -79,6 +90,107 @@ export class Redeemer {
     } catch (err) {
       log.error({ err }, 'Redeem check failed');
     }
+  }
+
+  /**
+   * Demo-mode redeem: scan our open positions, ask the CLOB whether the
+   * underlying market has resolved, and credit the demo balance accordingly.
+   *
+   * Uses CLOB `/markets/{conditionId}`, which returns `closed: boolean` and
+   * `tokens[].winner: boolean` — authoritative for resolution, no midpoint
+   * heuristic required. `tokens[].price` settles to 1.0 (winner) or 0.0.
+   */
+  private async checkAndRedeemDemo(): Promise<void> {
+    const open = queries.getAllOpenPositions();
+    if (open.length === 0) return;
+
+    const clob = new ClobClientWrapper();
+
+    log.info({ count: open.length }, 'Demo auto-redeem: scanning open positions');
+
+    let redeemedCount = 0;
+    for (const pos of open) {
+      try {
+        if (!pos.conditionId) continue;
+        const market = await clob.getMarketByConditionId(pos.conditionId);
+        if (!market || !market.closed) continue;
+
+        const ourToken = market.tokens.find((t) => t.token_id === pos.tokenId);
+        if (!ourToken) {
+          log.warn({ tokenId: pos.tokenId, conditionId: pos.conditionId }, 'Our token not found in resolved market');
+          continue;
+        }
+
+        const isWinner = ourToken.winner === true;
+        const payout = isWinner ? pos.totalShares * 1.0 : 0;
+        this.applyDemoRedeem(pos, payout, isWinner);
+        redeemedCount += 1;
+      } catch (err) {
+        log.warn({ err, tokenId: pos.tokenId }, 'Demo redeem check failed for position');
+      }
+      await sleep(100); // rate-limit CLOB
+    }
+
+    if (redeemedCount > 0) {
+      log.info({ count: redeemedCount }, 'Demo auto-redeem: positions redeemed');
+    }
+  }
+
+  private applyDemoRedeem(pos: BotPosition, payout: number, isWinner: boolean): void {
+    const newBalance = queries.getDemoBalance() + payout;
+    queries.setDemoBalance(newBalance);
+
+    queries.markPositionRedeemed(pos.tokenId);
+
+    // Attribute the redeem to the trader whose BUY opened this position (FK
+    // constraint on trades.trader_address requires a real tracked trader).
+    const opener = queries.getOpeningTraderForToken(pos.tokenId);
+
+    const id = `redeem-${Date.now()}-${pos.tokenId.slice(0, 8)}`;
+    const result: TradeResult = {
+      id,
+      timestamp: new Date().toISOString(),
+      traderAddress: opener?.address ?? '',
+      traderName: opener?.name ?? 'Auto-Redeem',
+      side: 'REDEEM',
+      marketSlug: pos.marketSlug ?? '',
+      marketTitle: pos.marketTitle ?? '',
+      conditionId: pos.conditionId ?? '',
+      tokenId: pos.tokenId,
+      outcome: pos.outcome ?? '',
+      size: pos.totalShares,
+      price: isWinner ? 1 : 0,
+      totalUsd: payout,
+      status: 'simulated',
+      error: isWinner ? 'Market resolved (won)' : 'Market resolved (lost)',
+      originalTraderSize: pos.totalShares,
+      originalTraderPrice: pos.avgPrice,
+      isDryRun: true,
+      commission: 0,
+    };
+    // Only persist the trade row when we have a known opener — trades table
+    // has a FK on trader_address. Without one we still credit balance + mark
+    // the position + activity-log the redeem, so no value is lost.
+    if (opener?.address) {
+      queries.insertTrade(result);
+      broadcastEvent('trade', result);
+    }
+
+    queries.insertActivity(
+      'redeem',
+      `Redeemed: ${pos.marketTitle || pos.tokenId} (${pos.outcome || '?'}) — payout $${payout.toFixed(2)}`,
+    );
+
+    log.info(
+      {
+        market: pos.marketTitle,
+        outcome: pos.outcome,
+        shares: pos.totalShares,
+        payout,
+        winner: isWinner,
+      },
+      'Demo position redeemed',
+    );
   }
 
   private async redeemPosition(conditionId: string): Promise<string> {

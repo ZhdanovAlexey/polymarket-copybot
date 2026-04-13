@@ -88,7 +88,7 @@ export class Tracker extends EventEmitter {
               timestamp: activity.timestamp,
               traderAddress: address,
               traderName: trader.name,
-              action: activity.action === 'sell' ? 'sell' : 'buy',
+              action: activity.action.toLowerCase() === 'sell' ? 'sell' : 'buy',
               marketSlug: activity.market_slug,
               marketTitle: activity.title,
               conditionId: activity.condition_id,

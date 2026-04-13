@@ -3,6 +3,23 @@ import { createLogger } from '../utils/logger.js';
 import { fetchWithRetry } from '../utils/retry.js';
 import type { OrderBookResponse } from '../types.js';
 
+export interface ClobMarket {
+  condition_id: string;
+  question: string;
+  market_slug: string;
+  active: boolean;
+  closed: boolean;
+  archived: boolean;
+  accepting_orders: boolean;
+  end_date_iso?: string;
+  tokens: Array<{
+    token_id: string;
+    outcome: string;
+    price: number;
+    winner: boolean;
+  }>;
+}
+
 const log = createLogger('clob-client');
 
 /**
@@ -131,6 +148,29 @@ export class ClobClientWrapper {
       return mid;
     } catch (err) {
       log.error({ err, tokenId }, 'failed to fetch midpoint');
+      throw err;
+    }
+  }
+
+  /**
+   * Fetch market metadata by condition id, including resolution state.
+   * `closed=true` combined with `tokens[].winner` tells us which outcome paid
+   * out $1.00 and which settled to $0.00 — needed for demo auto-redeem.
+   */
+  async getMarketByConditionId(conditionId: string): Promise<ClobMarket | null> {
+    const url = `${this.baseUrl}/markets/${encodeURIComponent(conditionId)}`;
+    log.debug({ conditionId, url }, 'fetching CLOB market by conditionId');
+
+    try {
+      const res = await fetchWithRetry(url);
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        throw new Error(`CLOB API responded with ${res.status}: ${res.statusText}`);
+      }
+      const data = (await res.json()) as ClobMarket;
+      return data;
+    } catch (err) {
+      log.error({ err, conditionId }, 'failed to fetch CLOB market by conditionId');
       throw err;
     }
   }

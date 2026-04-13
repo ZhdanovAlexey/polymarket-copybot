@@ -23,14 +23,20 @@ const configSchema = z.object({
 
   // Trading
   betSizeUsd: z.coerce.number().default(5),
+  betSizingMode: z.enum(['fixed', 'proportional']).default('proportional'),
+  betScaleAnchorUsd: z.coerce.number().default(100),
+  betScaleMaxMul: z.coerce.number().default(5),
+  betScaleMinMul: z.coerce.number().default(1),
   pollIntervalMs: z.coerce.number().default(30000),
   leaderRefreshIntervalMs: z.coerce.number().default(3600000),
   topTradersCount: z.coerce.number().default(10),
-  leaderboardPeriod: z.string().default('7d'),
+  leaderboardPeriod: z.string().default('WEEK'),
   redeemCheckIntervalMs: z.coerce.number().default(300000),
   maxSlippagePct: z.coerce.number().default(5),
   sellMode: z.string().default('mirror'),
   dryRun: z.coerce.boolean().default(true),
+  demoInitialBalanceUsd: z.coerce.number().default(1000),
+  demoCommissionPct: z.coerce.number().default(2),
 
   // Risk
   dailyLossLimitUsd: z.coerce.number().default(50),
@@ -75,6 +81,10 @@ function loadConfig(): AppConfig {
     gammaApiHost: process.env.GAMMA_API_HOST,
     polygonRpcUrl: process.env.POLYGON_RPC_URL,
     betSizeUsd: process.env.BET_SIZE_USD,
+    betSizingMode: process.env.BET_SIZING_MODE,
+    betScaleAnchorUsd: process.env.BET_SCALE_ANCHOR_USD,
+    betScaleMaxMul: process.env.BET_SCALE_MAX_MUL,
+    betScaleMinMul: process.env.BET_SCALE_MIN_MUL,
     pollIntervalMs: process.env.POLL_INTERVAL_MS,
     leaderRefreshIntervalMs: process.env.LEADER_REFRESH_INTERVAL_MS,
     topTradersCount: process.env.TOP_TRADERS_COUNT,
@@ -83,6 +93,8 @@ function loadConfig(): AppConfig {
     maxSlippagePct: process.env.MAX_SLIPPAGE_PCT,
     sellMode: process.env.SELL_MODE,
     dryRun: process.env.DRY_RUN,
+    demoInitialBalanceUsd: process.env.DEMO_INITIAL_BALANCE_USD,
+    demoCommissionPct: process.env.DEMO_COMMISSION_PCT,
     dailyLossLimitUsd: process.env.DAILY_LOSS_LIMIT_USD,
     maxDrawdownPct: process.env.MAX_DRAWDOWN_PCT,
     maxOpenPositions: process.env.MAX_OPEN_POSITIONS,
@@ -114,3 +126,57 @@ function loadConfig(): AppConfig {
 }
 
 export const config = loadConfig();
+
+/**
+ * Reload mutable settings from DB (settings table) at runtime.
+ * Called by bot on leaderboard refresh and after settings save.
+ * Accepts a getter function to avoid circular imports.
+ */
+export function reloadConfigFromDb(getSetting: (key: string) => string | undefined): void {
+  const numMap: Record<string, string> = {
+    betSizeUsd: 'bet_size_usd',
+    betScaleAnchorUsd: 'bet_scale_anchor_usd',
+    betScaleMaxMul: 'bet_scale_max_mul',
+    betScaleMinMul: 'bet_scale_min_mul',
+    topTradersCount: 'top_traders_count',
+    pollIntervalMs: 'poll_interval_ms',
+    maxSlippagePct: 'max_slippage_pct',
+    dailyLossLimitUsd: 'daily_loss_limit_usd',
+    maxOpenPositions: 'max_open_positions',
+    minMarketLiquidity: 'min_market_liquidity',
+    redeemCheckIntervalMs: 'redeem_check_interval_ms',
+    demoInitialBalanceUsd: 'demo_initial_balance',
+    demoCommissionPct: 'demo_commission_pct',
+  };
+
+  const stringMap: Record<string, string> = {
+    leaderboardPeriod: 'leaderboard_period',
+    sellMode: 'sell_mode',
+    betSizingMode: 'bet_sizing_mode',
+  };
+
+  const boolMap: Record<string, string> = {
+    dryRun: 'dry_run',
+  };
+
+  for (const [configKey, dbKey] of Object.entries(numMap)) {
+    const val = getSetting(dbKey);
+    if (val !== undefined && val !== '') {
+      (config as unknown as Record<string, unknown>)[configKey] = Number(val);
+    }
+  }
+
+  for (const [configKey, dbKey] of Object.entries(stringMap)) {
+    const val = getSetting(dbKey);
+    if (val !== undefined && val !== '') {
+      (config as unknown as Record<string, unknown>)[configKey] = val;
+    }
+  }
+
+  for (const [configKey, dbKey] of Object.entries(boolMap)) {
+    const val = getSetting(dbKey);
+    if (val !== undefined && val !== '') {
+      (config as unknown as Record<string, unknown>)[configKey] = val === 'true';
+    }
+  }
+}

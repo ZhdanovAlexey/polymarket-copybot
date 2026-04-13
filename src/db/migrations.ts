@@ -148,6 +148,15 @@ export function runMigrations(db: Database.Database): void {
 
   migrate();
 
+  // Schema updates (ALTER TABLE — wrapped in try/catch for idempotency)
+  const schemaUpdates = [
+    'ALTER TABLE trades ADD COLUMN commission REAL DEFAULT 0',
+    'ALTER TABLE tracked_traders ADD COLUMN exit_only INTEGER DEFAULT 0',
+  ];
+  for (const sql of schemaUpdates) {
+    try { db.exec(sql); } catch { /* column already exists */ }
+  }
+
   // Count tables to verify
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")

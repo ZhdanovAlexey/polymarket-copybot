@@ -31,14 +31,46 @@ export function setSetting(key: string, value: string): void {
 }
 
 // ============================================================
+// Demo Account
+// ============================================================
+
+export function getDemoBalance(): number {
+  const val = getSetting('demo_balance');
+  return val !== undefined ? parseFloat(val) : 0;
+}
+
+export function setDemoBalance(amount: number): void {
+  setSetting('demo_balance', String(amount));
+}
+
+export function getDemoTotalCommission(): number {
+  const val = getSetting('demo_total_commission');
+  return val !== undefined ? parseFloat(val) : 0;
+}
+
+export function resetDemoAccount(initialBalance: number): void {
+  const db = getDb();
+  db.transaction(() => {
+    setSetting('demo_balance', String(initialBalance));
+    setSetting('demo_initial_balance', String(initialBalance));
+    setSetting('demo_total_commission', '0');
+    db.prepare('DELETE FROM trades WHERE is_dry_run = 1').run();
+    db.prepare("DELETE FROM positions WHERE status = 'open'").run();
+    db.prepare('DELETE FROM pnl_snapshots').run();
+  })();
+}
+
+// ============================================================
 // Tracked Traders
 // ============================================================
 
 export function upsertTrader(trader: TrackedTrader): void {
+  // Note: on upsert we reset `exit_only = 0` — if a previously-removed trader
+  // re-enters top-N, treat as fresh active tracking.
   getDb()
     .prepare(
-      `INSERT INTO tracked_traders (address, name, pnl, volume, win_rate, score, trades_count, last_seen_timestamp, active, probation, probation_trades_left)
-       VALUES (@address, @name, @pnl, @volume, @winRate, @score, @tradesCount, @lastSeenTimestamp, @active, @probation, @probationTradesLeft)
+      `INSERT INTO tracked_traders (address, name, pnl, volume, win_rate, score, trades_count, last_seen_timestamp, active, exit_only, probation, probation_trades_left)
+       VALUES (@address, @name, @pnl, @volume, @winRate, @score, @tradesCount, @lastSeenTimestamp, @active, 0, @probation, @probationTradesLeft)
        ON CONFLICT(address) DO UPDATE SET
          name = excluded.name,
          pnl = excluded.pnl,
@@ -48,6 +80,7 @@ export function upsertTrader(trader: TrackedTrader): void {
          trades_count = excluded.trades_count,
          last_seen_timestamp = excluded.last_seen_timestamp,
          active = excluded.active,
+         exit_only = 0,
          probation = excluded.probation,
          probation_trades_left = excluded.probation_trades_left`
     )
@@ -73,8 +106,46 @@ export function getActiveTraders(): TrackedTrader[] {
   return rows.map(mapTraderRow);
 }
 
+/** Returns all traders the tracker should poll: active + exit-only. */
+export function getTrackedForPolling(): TrackedTrader[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM tracked_traders WHERE active = 1 OR exit_only = 1 ORDER BY score DESC')
+    .all() as Array<Record<string, unknown>>;
+  return rows.map(mapTraderRow);
+}
+
 export function deactivateTrader(address: string): void {
   getDb().prepare('UPDATE tracked_traders SET active = 0 WHERE address = ?').run(address);
+}
+
+/** Move to exit-only: stop copying BUYs but keep polling for SELL signals. */
+export function setExitOnly(address: string): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET active = 0, exit_only = 1 WHERE address = ?')
+    .run(address);
+}
+
+/** Fully stop tracking: tracker won't poll this trader anymore. */
+export function deactivateTraderFully(address: string): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET active = 0, exit_only = 0 WHERE address = ?')
+    .run(address);
+}
+
+/** Count distinct open positions where this trader contributed a BUY trade. */
+export function countOpenPositionsFromTrader(address: string): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(DISTINCT p.token_id) AS cnt
+       FROM positions p
+       WHERE p.status = 'open'
+       AND EXISTS (
+         SELECT 1 FROM trades t
+         WHERE t.trader_address = ? AND t.side = 'BUY' AND t.token_id = p.token_id
+       )`,
+    )
+    .get(address) as { cnt: number } | undefined;
+  return row?.cnt ?? 0;
 }
 
 export function getTraderByAddress(address: string): TrackedTrader | undefined {
@@ -96,6 +167,7 @@ function mapTraderRow(row: Record<string, unknown>): TrackedTrader {
     lastSeenTimestamp: row.last_seen_timestamp as number,
     addedAt: row.added_at as string,
     active: (row.active as number) === 1,
+    exitOnly: (row.exit_only as number) === 1,
     probation: (row.probation as number) === 1,
     probationTradesLeft: row.probation_trades_left as number,
   };
@@ -110,10 +182,10 @@ export function insertTrade(trade: TradeResult): void {
     .prepare(
       `INSERT INTO trades (id, timestamp, trader_address, trader_name, side, market_slug, market_title,
          condition_id, token_id, outcome, size, price, total_usd, order_id, status, error,
-         original_trader_size, original_trader_price, is_dry_run)
+         original_trader_size, original_trader_price, is_dry_run, commission)
        VALUES (@id, @timestamp, @traderAddress, @traderName, @side, @marketSlug, @marketTitle,
          @conditionId, @tokenId, @outcome, @size, @price, @totalUsd, @orderId, @status, @error,
-         @originalTraderSize, @originalTraderPrice, @isDryRun)`
+         @originalTraderSize, @originalTraderPrice, @isDryRun, @commission)`
     )
     .run({
       id: trade.id,
@@ -135,6 +207,7 @@ export function insertTrade(trade: TradeResult): void {
       originalTraderSize: trade.originalTraderSize,
       originalTraderPrice: trade.originalTraderPrice,
       isDryRun: trade.isDryRun ? 1 : 0,
+      commission: trade.commission ?? 0,
     });
 }
 
@@ -196,6 +269,7 @@ function mapTradeRow(row: Record<string, unknown>): TradeResult {
     originalTraderSize: row.original_trader_size as number,
     originalTraderPrice: row.original_trader_price as number,
     isDryRun: (row.is_dry_run as number) === 1,
+    commission: (row.commission as number) ?? 0,
   };
 }
 
@@ -243,6 +317,83 @@ export function getAllOpenPositions(): BotPosition[] {
   return rows.map(mapPositionRow);
 }
 
+export interface ClosedPositionRow extends BotPosition {
+  closeUsd: number;         // total USD received from SELL + REDEEM trades
+  closeSize: number;        // total shares exited
+  closeAvgPrice: number;    // closeUsd / closeSize (0 if no exit trades)
+  realizedPnl: number;      // closeUsd − totalInvested
+  closedAt: string | null;  // most recent SELL/REDEEM timestamp
+  traderAddress: string;    // trader whose BUY opened this position
+  traderName: string;
+}
+
+/**
+ * Round-trip view for closed + redeemed positions, enriched with the aggregate
+ * close price, received USD, and realized P&L. Used by Dashboard "Closed
+ * Positions" section.
+ */
+export function getClosedPositions(limit = 200): ClosedPositionRow[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT p.*,
+              COALESCE(SUM(CASE WHEN t.side IN ('SELL','REDEEM') THEN t.total_usd END), 0) AS close_usd,
+              COALESCE(SUM(CASE WHEN t.side IN ('SELL','REDEEM') THEN t.size END), 0) AS close_size,
+              MAX(CASE WHEN t.side IN ('SELL','REDEEM') THEN t.timestamp END) AS closed_at,
+              (SELECT ob.trader_address FROM trades ob
+                 WHERE ob.token_id = p.token_id AND ob.side = 'BUY'
+                 ORDER BY ob.timestamp ASC LIMIT 1) AS trader_address,
+              (SELECT ob.trader_name FROM trades ob
+                 WHERE ob.token_id = p.token_id AND ob.side = 'BUY'
+                 ORDER BY ob.timestamp ASC LIMIT 1) AS trader_name
+         FROM positions p
+         LEFT JOIN trades t ON t.token_id = p.token_id
+        WHERE p.status IN ('closed','redeemed')
+        GROUP BY p.id
+        ORDER BY closed_at DESC
+        LIMIT ?`,
+    )
+    .all(limit) as Array<Record<string, unknown>>;
+
+  return rows.map((row) => {
+    const base = mapPositionRow(row);
+    const closeUsd = Number(row.close_usd ?? 0);
+    const closeSize = Number(row.close_size ?? 0);
+    return {
+      ...base,
+      closeUsd,
+      closeSize,
+      closeAvgPrice: closeSize > 0 ? closeUsd / closeSize : 0,
+      realizedPnl: closeUsd - base.totalInvested,
+      closedAt: (row.closed_at as string | null) ?? null,
+      traderAddress: (row.trader_address as string) ?? '',
+      traderName: (row.trader_name as string) ?? '',
+    };
+  });
+}
+
+/**
+ * The trader whose earliest BUY opened this position. Used to attribute
+ * auto-redeem trade records (trades.trader_address is FK → tracked_traders).
+ */
+export function getOpeningTraderForToken(
+  tokenId: string,
+): { address: string; name: string } | undefined {
+  const row = getDb()
+    .prepare(
+      `SELECT trader_address AS address, trader_name AS name
+         FROM trades
+        WHERE token_id = ? AND side = 'BUY'
+        ORDER BY timestamp ASC
+        LIMIT 1`,
+    )
+    .get(tokenId) as { address: string; name: string } | undefined;
+  return row;
+}
+
+export function markPositionRedeemed(tokenId: string): void {
+  getDb().prepare("UPDATE positions SET status = 'redeemed' WHERE token_id = ?").run(tokenId);
+}
+
 export function closePosition(tokenId: string): void {
   getDb().prepare("UPDATE positions SET status = 'closed' WHERE token_id = ?").run(tokenId);
 }
@@ -282,14 +433,32 @@ export function insertSnapshot(snapshot: Omit<PnlSnapshot, 'id' | 'timestamp'>):
     });
 }
 
+/**
+ * Earliest snapshot from today (local "now" timezone via SQLite).
+ * Used to compute Today P&L = currentTotalPnl − todayBaseline.totalPnl.
+ * Returns undefined if no snapshot has been taken yet today.
+ */
+export function getTodayBaselineSnapshot(): PnlSnapshot | undefined {
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM pnl_snapshots
+       WHERE timestamp >= date('now', 'start of day')
+       ORDER BY timestamp ASC
+       LIMIT 1`,
+    )
+    .get() as Record<string, unknown> | undefined;
+  return row ? mapSnapshotRow(row) : undefined;
+}
+
 export function getSnapshots(options?: { period?: string; limit?: number }): PnlSnapshot[] {
-  const limit = options?.limit ?? 100;
+  const limit = options?.limit ?? 500;
   let sql = 'SELECT * FROM pnl_snapshots';
   const params: unknown[] = [];
 
   if (options?.period) {
-    const days = parsePeriodToDays(options.period);
-    sql += ` WHERE timestamp >= datetime('now', '-${days} days')`;
+    const { value, unit } = parsePeriod(options.period);
+    // SQLite datetime modifier: '-N hours' / '-N days'
+    sql += ` WHERE timestamp >= datetime('now', '-${value} ${unit}')`;
   }
 
   sql += ' ORDER BY timestamp DESC LIMIT ?';
@@ -299,20 +468,20 @@ export function getSnapshots(options?: { period?: string; limit?: number }): Pnl
   return rows.map(mapSnapshotRow);
 }
 
-function parsePeriodToDays(period: string): number {
+function parsePeriod(period: string): { value: number; unit: 'hours' | 'days' } {
   const match = period.match(/^(\d+)([dhw])$/);
-  if (!match) return 7;
-  const [, num, unit] = match;
+  if (!match) return { value: 7, unit: 'days' };
+  const [, num, u] = match;
   const n = parseInt(num!, 10);
-  switch (unit) {
+  switch (u) {
     case 'h':
-      return Math.max(1, Math.ceil(n / 24));
+      return { value: n, unit: 'hours' };
     case 'd':
-      return n;
+      return { value: n, unit: 'days' };
     case 'w':
-      return n * 7;
+      return { value: n * 7, unit: 'days' };
     default:
-      return 7;
+      return { value: 7, unit: 'days' };
   }
 }
 

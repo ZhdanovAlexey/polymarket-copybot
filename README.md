@@ -11,12 +11,13 @@ Autonomous copy-trading bot for PolyMarket with professional web dashboard, stra
 - **Setup Wizard** — browser-based wallet setup, no terminal needed
 - **Strategy Intelligence** — performance attribution, auto-rotation, backtesting, Kelly Criterion optimizer, anomaly detection
 - **Telegram Notifications** — trade alerts, daily summaries, risk warnings
-- **Dry Run Mode** — test strategies without real money
+- **Demo Account** — paper trading with virtual balance, commission tracking, and account reset
 - **Auto-Redeem** — automatically claims winnings from resolved markets
 
 ## Quick Start
 
 ### Prerequisites
+
 - Node.js 18+
 - pnpm
 - Polygon wallet with MATIC (gas) and USDC.e (trading)
@@ -31,7 +32,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-Open http://localhost:3000 — Setup Wizard will guide you through wallet connection.
+Open [http://localhost:3000](http://localhost:3000) — Setup Wizard will guide you through wallet connection.
 
 ### Docker
 
@@ -141,7 +142,7 @@ polymarket-copybot/
 │   │   ├── bot.ts                       # Bot orchestrator: start/stop, wire all subsystems
 │   │   ├── leaderboard.ts              # Fetch + score + filter traders
 │   │   ├── tracker.ts                  # Poll trader activity, emit newTrade events
-│   │   ├── executor.ts                 # Execute BUY/SELL (dry-run + real via CLOB)
+│   │   ├── executor.ts                 # Execute BUY/SELL (demo account + real via CLOB)
 │   │   ├── risk-manager.ts            # Daily limit, max positions, slippage, liquidity
 │   │   ├── portfolio.ts               # Track positions, update after trades
 │   │   ├── redeemer.ts                # Auto-redeem resolved markets via CTF contract
@@ -195,76 +196,85 @@ polymarket-copybot/
 
 ### Database schema (SQLite, 10 tables)
 
-| Table | Purpose | Key columns |
-|-------|---------|-------------|
-| `settings` | Key-value config store | key, value |
-| `tracked_traders` | Monitored traders + scores | address, score, pnl, win_rate, probation |
-| `trades` | All bot trades | side, status (filled/simulated/failed/skipped), is_dry_run |
-| `positions` | Open positions | token_id, total_shares, avg_price, status |
-| `pnl_snapshots` | Periodic P&L for charts | total_pnl, realized, unrealized |
-| `activity_log` | Audit trail | type (trade/redeem/start/stop/error), message |
-| `trader_performance` | P&L attribution per trader per day | wins, losses, total_pnl, slippage_avg |
-| `rotation_log` | Trader swap history | old_trader, new_trader, reason |
-| `backtest_results` | Saved backtest runs | config (JSON), equity_curve (JSON), sharpe |
-| `anomaly_log` | Detected anomalies | type (size/market/frequency), severity |
+
+| Table                | Purpose                            | Key columns                                                |
+| -------------------- | ---------------------------------- | ---------------------------------------------------------- |
+| `settings`           | Key-value config store             | key, value                                                 |
+| `tracked_traders`    | Monitored traders + scores         | address, score, pnl, win_rate, probation                   |
+| `trades`             | All bot trades                     | side, status (filled/simulated/failed/skipped), is_dry_run, commission |
+| `positions`          | Open positions                     | token_id, total_shares, avg_price, status                  |
+| `pnl_snapshots`      | Periodic P&L for charts            | total_pnl, realized, unrealized                            |
+| `activity_log`       | Audit trail                        | type (trade/redeem/start/stop/error), message              |
+| `trader_performance` | P&L attribution per trader per day | wins, losses, total_pnl, slippage_avg                      |
+| `rotation_log`       | Trader swap history                | old_trader, new_trader, reason                             |
+| `backtest_results`   | Saved backtest runs                | config (JSON), equity_curve (JSON), sharpe                 |
+| `anomaly_log`        | Detected anomalies                 | type (size/market/frequency), severity                     |
+
 
 ### API endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status` | GET | Bot status, uptime, version |
-| `/api/traders` | GET | Active tracked traders |
-| `/api/trades?limit=&offset=&status=` | GET | Trade history with filters |
-| `/api/metrics` | GET | P&L, win rate, trade counts |
-| `/api/positions` | GET | Open positions |
-| `/api/pnl-history?period=` | GET | P&L snapshots for chart |
-| `/api/activity?type=&limit=` | GET | Activity log |
-| `/api/bot/start` | POST | Start the bot |
-| `/api/bot/stop` | POST | Stop the bot |
-| `/api/settings` | GET/POST | Read/write bot settings |
-| `/api/auth/connect-wallet` | POST | Submit private key, get address + balances |
-| `/api/auth/derive-keys` | POST | Derive CLOB API credentials |
-| `/api/auth/approve-usdc` | POST | Approve USDC spending |
-| `/api/auth/approve-ctf` | POST | Approve CTF token transfers |
-| `/api/auth/preflight` | GET | Pre-launch readiness check |
-| `/api/auth/balance` | GET | Current USDC + MATIC balances |
-| `/api/sse` | GET | Server-Sent Events stream |
-| `/api/backtest/run` | POST | Start async backtest |
-| `/api/backtest/status?id=` | GET | Backtest progress |
-| `/api/backtest/results` | GET | List saved backtests |
-| `/api/backtest/result/:id` | GET | Single backtest result |
-| `/api/strategy/recommendations` | GET | Optimizer suggestions |
-| `/api/strategy/anomalies` | GET | Anomaly alerts |
-| `/api/strategy/performance` | GET | Per-trader performance |
-| `/api/strategy/rotations` | GET | Trader rotation history |
-| `/api/export/trades` | GET | CSV download |
+
+| Endpoint                             | Method   | Description                                |
+| ------------------------------------ | -------- | ------------------------------------------ |
+| `/api/status`                        | GET      | Bot status, uptime, version                |
+| `/api/traders`                       | GET      | Active tracked traders                     |
+| `/api/trades?limit=&offset=&status=` | GET      | Trade history with filters                 |
+| `/api/metrics`                       | GET      | P&L, win rate, trade counts                |
+| `/api/positions`                     | GET      | Open positions                             |
+| `/api/pnl-history?period=`           | GET      | P&L snapshots for chart                    |
+| `/api/activity?type=&limit=`         | GET      | Activity log                               |
+| `/api/bot/start`                     | POST     | Start the bot                              |
+| `/api/bot/stop`                      | POST     | Stop the bot                               |
+| `/api/settings`                      | GET/POST | Read/write bot settings                    |
+| `/api/auth/connect-wallet`           | POST     | Submit private key, get address + balances |
+| `/api/auth/derive-keys`              | POST     | Derive CLOB API credentials                |
+| `/api/auth/approve-usdc`             | POST     | Approve USDC spending                      |
+| `/api/auth/approve-ctf`              | POST     | Approve CTF token transfers                |
+| `/api/auth/preflight`                | GET      | Pre-launch readiness check                 |
+| `/api/auth/balance`                  | GET      | Current USDC + MATIC balances (or demo)    |
+| `/api/demo/reset`                    | POST     | Reset demo account to initial balance      |
+| `/api/sse`                           | GET      | Server-Sent Events stream                  |
+| `/api/backtest/run`                  | POST     | Start async backtest                       |
+| `/api/backtest/status?id=`           | GET      | Backtest progress                          |
+| `/api/backtest/results`              | GET      | List saved backtests                       |
+| `/api/backtest/result/:id`           | GET      | Single backtest result                     |
+| `/api/strategy/recommendations`      | GET      | Optimizer suggestions                      |
+| `/api/strategy/anomalies`            | GET      | Anomaly alerts                             |
+| `/api/strategy/performance`          | GET      | Per-trader performance                     |
+| `/api/strategy/rotations`            | GET      | Trader rotation history                    |
+| `/api/export/trades`                 | GET      | CSV download                               |
+
 
 ### Technology stack
 
-| Component | Technology |
-|-----------|-----------|
-| Language | TypeScript (ESM, strict) |
-| Runtime | Node.js 18+ |
-| Package manager | pnpm |
-| Trading SDK | @polymarket/clob-client + ethers v5 |
-| Web server | Express 5 |
-| Real-time | Server-Sent Events (SSE) |
-| Frontend | Vanilla HTML/CSS/JS (no framework) |
-| Charts | Chart.js (CDN) |
-| Database | SQLite via better-sqlite3 |
-| Logging | pino + pino-pretty |
-| Config | dotenv + zod validation |
-| Notifications | node-telegram-bot-api |
+
+| Component       | Technology                          |
+| --------------- | ----------------------------------- |
+| Language        | TypeScript (ESM, strict)            |
+| Runtime         | Node.js 18+                         |
+| Package manager | pnpm                                |
+| Trading SDK     | @polymarket/clob-client + ethers v5 |
+| Web server      | Express 5                           |
+| Real-time       | Server-Sent Events (SSE)            |
+| Frontend        | Vanilla HTML/CSS/JS (no framework)  |
+| Charts          | Chart.js (CDN)                      |
+| Database        | SQLite via better-sqlite3           |
+| Logging         | pino + pino-pretty                  |
+| Config          | dotenv + zod validation             |
+| Notifications   | node-telegram-bot-api               |
+
 
 ### Smart contracts (Polygon)
 
-| Contract | Address |
-|----------|---------|
-| CTF Exchange | `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E` |
-| Neg Risk Exchange | `0xC5d563A36AE78145C45a50134d48A1215220f80a` |
+
+| Contract                 | Address                                      |
+| ------------------------ | -------------------------------------------- |
+| CTF Exchange             | `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E` |
+| Neg Risk Exchange        | `0xC5d563A36AE78145C45a50134d48A1215220f80a` |
 | CTF (Conditional Tokens) | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` |
-| USDC.e | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` |
-| Neg Risk Adapter | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` |
+| USDC.e                   | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` |
+| Neg Risk Adapter         | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` |
+
 
 ---
 
@@ -272,16 +282,20 @@ polymarket-copybot/
 
 See `.env.example` for all options. Key settings:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DRY_RUN` | `true` | Simulate trades without money |
-| `BET_SIZE_USD` | `5` | Amount per copied trade |
-| `TOP_TRADERS_COUNT` | `10` | How many traders to track |
-| `POLL_INTERVAL_MS` | `30000` | How often to check for new trades |
-| `MAX_SLIPPAGE_PCT` | `5` | Max allowed slippage % |
-| `DAILY_LOSS_LIMIT_USD` | `50` | Stop bot if daily loss exceeds |
-| `MAX_OPEN_POSITIONS` | `10` | Position limit |
-| `DASHBOARD_PORT` | `3000` | Web UI port |
+
+| Variable               | Default | Description                       |
+| ---------------------- | ------- | --------------------------------- |
+| `DRY_RUN`              | `true`  | Demo mode with virtual balance    |
+| `DEMO_INITIAL_BALANCE_USD` | `1000` | Starting demo balance (USD)   |
+| `DEMO_COMMISSION_PCT`  | `2`     | Simulated taker fee (%)           |
+| `BET_SIZE_USD`         | `5`     | Amount per copied trade           |
+| `TOP_TRADERS_COUNT`    | `10`    | How many traders to track         |
+| `POLL_INTERVAL_MS`     | `30000` | How often to check for new trades |
+| `MAX_SLIPPAGE_PCT`     | `5`     | Max allowed slippage %            |
+| `DAILY_LOSS_LIMIT_USD` | `50`    | Stop bot if daily loss exceeds    |
+| `MAX_OPEN_POSITIONS`   | `10`    | Position limit                    |
+| `DASHBOARD_PORT`       | `3000`  | Web UI port                       |
+
 
 ## License
 

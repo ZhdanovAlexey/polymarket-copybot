@@ -19,7 +19,8 @@ const METRIC_DEFS = [
     label: 'Win Rate',
     format: formatPercent,
     colorize: false,
-    subKey: null,
+    subKey: 'winLoss',
+    subFormat: (v) => v || '&nbsp;',
   },
   {
     id: 'total-trades',
@@ -36,6 +37,14 @@ const METRIC_DEFS = [
     colorize: true,
     subKey: 'todayTrades',
     subFormat: (v) => `${v} trades today`,
+  },
+  {
+    id: 'locked-in',
+    label: 'Locked in positions',
+    format: formatUsdUnsigned,
+    colorize: false,
+    subKey: 'openPositions',
+    subFormat: (v) => `${v} open position${v === 1 ? '' : 's'}`,
   },
 ];
 
@@ -58,6 +67,18 @@ export function initDashboard() {
     `;
     container.appendChild(card);
   }
+
+  // Demo balance card (hidden until data confirms demo mode)
+  const demoCard = document.createElement('div');
+  demoCard.className = 'metric-card';
+  demoCard.id = 'demo-balance-card';
+  demoCard.style.display = 'none';
+  demoCard.innerHTML = `
+    <span class="metric-label">Demo Balance</span>
+    <span class="metric-value neutral" id="mv-demo-balance">--</span>
+    <span class="metric-sub" id="ms-demo-commission">&nbsp;</span>
+  `;
+  container.appendChild(demoCard);
 }
 
 /**
@@ -67,11 +88,16 @@ export function initDashboard() {
 export function updateMetrics(data) {
   if (!data) return;
 
+  const wins = Number(data.wins || 0);
+  const losses = Number(data.losses || 0);
+  data.winLoss = (wins + losses) > 0 ? `${wins}W / ${losses}L` : 'No closed trades yet';
+
   const values = {
     'total-pnl': data.totalPnl,
     'win-rate': data.winRate,
     'total-trades': data.totalTrades,
     'today-pnl': data.todayPnl,
+    'locked-in': data.lockedInOpen,
   };
 
   for (const def of METRIC_DEFS) {
@@ -90,14 +116,31 @@ export function updateMetrics(data) {
       subEl.textContent = def.subFormat(data[def.subKey]);
     }
   }
+
+  // Demo balance card
+  const demoCard = document.getElementById('demo-balance-card');
+  if (demoCard && data.demoBalance != null) {
+    demoCard.style.display = '';
+    const valEl = document.getElementById('mv-demo-balance');
+    const subEl = document.getElementById('ms-demo-commission');
+    if (valEl) valEl.textContent = `$${data.demoBalance.toFixed(2)}`;
+    if (subEl && data.demoTotalCommission != null) {
+      subEl.textContent = `Commission: $${data.demoTotalCommission.toFixed(2)}`;
+    }
+  }
 }
 
 /* ---- Formatting helpers ---- */
 
 function formatUsd(value) {
   if (value == null || isNaN(value)) return '--';
-  const sign = value >= 0 ? '+' : '';
+  const sign = value >= 0 ? '+' : '-';
   return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatUsdUnsigned(value) {
+  if (value == null || isNaN(value)) return '--';
+  return `$${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 }
 
 function formatPercent(value) {

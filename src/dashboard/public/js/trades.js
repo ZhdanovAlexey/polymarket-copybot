@@ -60,7 +60,6 @@ export function addTrade(trade) {
     allTrades = allTrades.slice(0, 500);
   }
   renderTable();
-  addToLiveFeed(trade);
 }
 
 /* ---- Internal rendering ---- */
@@ -68,6 +67,11 @@ export function addTrade(trade) {
 function renderTable() {
   const tbody = document.getElementById('trade-log-body');
   if (!tbody) return;
+
+  // Expose re-render hook so the shared sort helper in app.js can trigger it.
+  if (typeof window !== 'undefined') {
+    window.__rerenderTradeLog = renderTable;
+  }
 
   const filtered = allTrades.filter((t) => {
     // Status filter
@@ -96,53 +100,29 @@ function renderTable() {
   });
 
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No trades found</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No trades found</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = filtered
+  // Apply external sort state (set by app.js click handler) if present.
+  const sortState = (typeof window !== 'undefined' && window.__sortTradeLog) || null;
+  const sorted = sortState ? window.__sortTradeLog(filtered) : filtered;
+
+  tbody.innerHTML = sorted
     .map(
       (t) => `
     <tr>
       <td title="${escapeHtml(t.timestamp)}">${relativeTime(t.timestamp)}</td>
       <td title="${escapeHtml(t.traderAddress)}">${escapeHtml(truncateName(t.traderName || t.traderAddress))}</td>
-      <td title="${escapeHtml(t.marketTitle)}">${escapeHtml(truncate(t.marketTitle, 40))}</td>
-      <td class="${t.side === 'BUY' ? 'side-buy' : 'side-sell'}">${t.side}</td>
+      <td title="${escapeHtml(t.marketTitle)}">${marketLink(t.marketSlug, t.marketTitle, 40)}</td>
+      <td class="${sideClass(t.side)}">${t.side}</td>
       <td>${escapeHtml(t.outcome || '--')}</td>
       <td>$${Number(t.totalUsd || 0).toFixed(2)}</td>
-      <td><span class="status-pill ${t.status}">${t.status}</span></td>
+      <td>$${Number(t.commission || 0).toFixed(2)}</td>
+      <td><span class="status-pill ${t.status}"${t.error ? ` title="${escapeHtml(t.error)}"` : ''}>${t.status}</span></td>
     </tr>`,
     )
     .join('');
-}
-
-function addToLiveFeed(trade) {
-  const feed = document.getElementById('live-feed');
-  if (!feed) return;
-
-  // Remove empty state if present
-  const empty = feed.querySelector('.empty-state');
-  if (empty) empty.remove();
-
-  const item = document.createElement('div');
-  item.className = 'feed-item';
-  item.innerHTML = `
-    <span class="feed-time">${formatTime(trade.timestamp)}</span>
-    <span class="feed-side ${trade.side === 'BUY' ? 'buy' : 'sell'}">${trade.side}</span>
-    <span class="feed-details">
-      <strong>${escapeHtml(truncateName(trade.traderName))}</strong>
-      ${escapeHtml(truncate(trade.marketTitle, 35))}
-      &middot; $${Number(trade.totalUsd || 0).toFixed(2)}
-    </span>
-  `;
-
-  feed.prepend(item);
-
-  // Limit feed items
-  const items = feed.querySelectorAll('.feed-item');
-  if (items.length > 50) {
-    items[items.length - 1].remove();
-  }
 }
 
 /* ---- CSV Export ---- */
@@ -150,7 +130,7 @@ function addToLiveFeed(trade) {
 function exportCsv() {
   if (allTrades.length === 0) return;
 
-  const header = ['Time', 'Trader', 'Address', 'Market', 'Side', 'Outcome', 'Size', 'Price', 'Total USD', 'Status'];
+  const header = ['Time', 'Trader', 'Address', 'Market', 'Side', 'Outcome', 'Size', 'Price', 'Total USD', 'Fee', 'Status'];
   const rows = allTrades.map((t) => [
     t.timestamp,
     t.traderName,
@@ -161,6 +141,7 @@ function exportCsv() {
     t.size,
     t.price,
     t.totalUsd,
+    t.commission || 0,
     t.status,
   ]);
 
@@ -176,6 +157,12 @@ function exportCsv() {
 }
 
 /* ---- Formatting helpers ---- */
+
+function sideClass(side) {
+  if (side === 'BUY') return 'side-buy';
+  if (side === 'REDEEM') return 'side-redeem';
+  return 'side-sell';
+}
 
 function relativeTime(timestamp) {
   if (!timestamp) return '--';
@@ -201,17 +188,17 @@ function relativeTime(timestamp) {
   return date.toLocaleDateString();
 }
 
-function formatTime(timestamp) {
-  if (!timestamp) return '--';
-  const date = new Date(timestamp);
-  if (isNaN(date.getTime())) return '--';
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
 function truncate(str, maxLen) {
   if (!str) return '';
   if (str.length <= maxLen) return str;
   return str.slice(0, maxLen - 1) + '\u2026';
+}
+
+function marketLink(slug, title, maxLen) {
+  const text = escapeHtml(truncate(title || slug || '--', maxLen));
+  if (!slug) return text;
+  const url = `https://polymarket.com/event/${encodeURIComponent(slug)}`;
+  return `<a class="market-link" href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
 }
 
 function truncateName(name) {

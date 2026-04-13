@@ -107,6 +107,11 @@ export interface TrackedTrader {
   lastSeenTimestamp: number;
   addedAt: string;
   active: boolean;
+  /** When true, tracker still polls this trader, but only SELL signals are copied.
+   *  Used when a trader dropped out of top-N or was manually removed while still
+   *  holding positions from our portfolio. Auto-cleared to `active=0, exit_only=0`
+   *  once no open positions remain that originated from this trader's BUYs. */
+  exitOnly: boolean;
   // Strategy fields
   probation: boolean;
   probationTradesLeft: number;
@@ -134,7 +139,7 @@ export interface TradeResult {
   timestamp: string;
   traderAddress: string;
   traderName: string;
-  side: 'BUY' | 'SELL';
+  side: 'BUY' | 'SELL' | 'REDEEM';
   marketSlug: string;
   marketTitle: string;
   conditionId: string;
@@ -149,6 +154,7 @@ export interface TradeResult {
   originalTraderSize: number;
   originalTraderPrice: number;
   isDryRun: boolean;
+  commission: number;
 }
 
 export interface BotPosition {
@@ -200,6 +206,10 @@ export interface AppConfig {
   polygonRpcUrl: string;
   // Trading
   betSizeUsd: number;
+  betSizingMode: 'fixed' | 'proportional';
+  betScaleAnchorUsd: number;
+  betScaleMaxMul: number;
+  betScaleMinMul: number;
   pollIntervalMs: number;
   leaderRefreshIntervalMs: number;
   topTradersCount: number;
@@ -208,6 +218,8 @@ export interface AppConfig {
   maxSlippagePct: number;
   sellMode: string;
   dryRun: boolean;
+  demoInitialBalanceUsd: number;
+  demoCommissionPct: number;
   // Risk
   dailyLossLimitUsd: number;
   maxDrawdownPct: number;

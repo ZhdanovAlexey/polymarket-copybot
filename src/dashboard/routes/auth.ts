@@ -1,10 +1,18 @@
 import { Router, type Router as RouterType } from 'express';
 import { createLogger } from '../../utils/logger.js';
-import { config } from '../../config.js';
+import { config, reloadConfigFromDb } from '../../config.js';
 import * as queries from '../../db/queries.js';
+import type { Bot } from '../../core/bot.js';
 
 const log = createLogger('auth');
 export const authRouter: RouterType = Router();
+
+// Bot instance reference — set from index.ts via setBot().
+let bot: Bot | null = null;
+
+export function setBot(b: Bot): void {
+  bot = b;
+}
 
 // POST /api/auth/connect-wallet
 // Body: { privateKey: string }
@@ -154,8 +162,25 @@ authRouter.post('/approve-ctf', async (req, res) => {
 });
 
 // GET /api/auth/preflight
-// Check everything is set up correctly
+// Check everything is set up correctly. In demo mode, skip wallet checks.
 authRouter.get('/preflight', async (_req, res) => {
+  // In demo/dry-run mode, wallet setup is not needed
+  if (config.dryRun) {
+    res.json({
+      walletConnected: true,
+      apiKeysDerived: true,
+      usdcApproved: true,
+      ctfApproved: true,
+      clobApiReachable: true,
+      dataApiReachable: true,
+      sufficientUsdc: true,
+      sufficientMatic: true,
+      ready: true,
+      demoMode: true,
+    });
+    return;
+  }
+
   const checks = {
     walletConnected: queries.getSetting('wallet_connected') === 'true',
     apiKeysDerived: queries.getSetting('api_keys_derived') === 'true',
@@ -167,22 +192,16 @@ authRouter.get('/preflight', async (_req, res) => {
     sufficientMatic: false,
   };
 
-  // Check APIs
   try {
     const clobRes = await fetch(`${config.clobHost}/time`);
     checks.clobApiReachable = clobRes.ok;
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
 
   try {
-    const dataRes = await fetch(`${config.dataApiHost}/leaderboard?limit=1`);
+    const dataRes = await fetch(`${config.dataApiHost}/v1/leaderboard?limit=1`);
     checks.dataApiReachable = dataRes.ok;
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
 
-  // Check balances
   try {
     const { ethers } = await import('ethers');
     const addr = queries.getSetting('wallet_address');
@@ -197,18 +216,20 @@ authRouter.get('/preflight', async (_req, res) => {
       const usdcBal = parseFloat(ethers.utils.formatUnits(await usdcContract.balanceOf(addr), 6));
       checks.sufficientUsdc = usdcBal > 0;
     }
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
 
   const allGood = Object.values(checks).every((v) => v === true);
-
   res.json({ ...checks, ready: allGood });
 });
 
 // GET /api/auth/balance
 authRouter.get('/balance', async (_req, res) => {
   try {
+    if (config.dryRun) {
+      res.json({ usdc: queries.getDemoBalance(), matic: 0, isDemo: true });
+      return;
+    }
+
     const { ethers } = await import('ethers');
     const addr = queries.getSetting('wallet_address');
     if (!addr) {
@@ -236,12 +257,26 @@ authRouter.get('/balance', async (_req, res) => {
 authRouter.post('/settings', async (req, res) => {
   try {
     const settings = req.body as Record<string, string>;
+    const savedKeys: string[] = [];
     for (const [key, value] of Object.entries(settings)) {
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         queries.setSetting(key, String(value));
+        savedKeys.push(key);
       }
     }
-    log.info('Settings saved');
+    reloadConfigFromDb(queries.getSetting);
+
+    // If user changed knobs that shape leaderboard selection, refresh now
+    // (instead of waiting for the next hourly tick).
+    const leaderboardKeys = ['top_traders_count', 'leaderboard_period', 'min_trader_volume'];
+    const changedLeaderboardKey = savedKeys.some((k) => leaderboardKeys.includes(k));
+    if (changedLeaderboardKey && bot?.getStatus().running) {
+      bot
+        .refreshLeaderboardNow()
+        .catch((e) => log.error({ err: e }, 'Auto-refresh after settings save failed'));
+    }
+
+    log.info({ saved: savedKeys, autoRefresh: changedLeaderboardKey }, 'Settings saved and applied to runtime');
     res.json({ success: true });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -256,15 +291,24 @@ authRouter.get('/settings', (_req, res) => {
   try {
     const keys = [
       'bet_size_usd',
+      'bet_sizing_mode',
+      'bet_scale_anchor_usd',
+      'bet_scale_max_mul',
+      'bet_scale_min_mul',
       'top_traders_count',
       'leaderboard_period',
       'poll_interval_ms',
       'max_slippage_pct',
       'daily_loss_limit_usd',
+      'max_open_positions',
+      'min_market_liquidity',
+      'sell_mode',
       'dry_run',
       'telegram_enabled',
       'telegram_token',
       'telegram_chat_id',
+      'demo_initial_balance',
+      'demo_commission_pct',
     ];
     const result: Record<string, string> = {};
     for (const key of keys) {

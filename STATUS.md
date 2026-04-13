@@ -11,6 +11,28 @@ All 12 stages implemented. 40 source files, ~16.5k lines. TypeScript compiles wi
 
 ---
 
+## Recent Changes
+
+- **Proportional bet sizing**: `executor.executeBuy` теперь не всегда копирует фиксированный `betSizeUsd`, а масштабирует под размер ставки трейдера: `our_usd = betSize × clamp(trader_usd / anchor, minMul, maxMul)`. Новые настройки `bet_sizing_mode` (`fixed` | `proportional`, дефолт proportional), `bet_scale_anchor_usd` (100), `bet_scale_min_mul` (1), `bet_scale_max_mul` (5). При mode=fixed или если `usdValue` API не вернул — фолбэк на базовую сумму. В DRY RUN log'ах добавлены поля `traderUsd` и `mul` для прозрачности. UI-поля в Settings → Trading. Top-up'ы трейдера продолжают копироваться каждый по своей логике sizing'а (сознательное решение: top-up = сигнал уверенности).
+- **Demo Auto-Redeem for resolved markets**: раньше в demo-mode позиции резолвнутых маркетов висели бесконечно — `redeemer.ts` читал `wallet_address` из settings, а в demo он не ставится → early return. Теперь `Redeemer.checkAndRedeem()` ветвится: в dry-run вызывает новый `checkAndRedeemDemo()`, который для каждой open-позиции бьёт в CLOB `/markets/{conditionId}`. Если `closed=true` — берём `tokens[].winner` флаг для нашего `tokenId`: winner → `payout = shares * $1` в демо-баланс + позиция `status='redeemed'` + запись в Trade Log `side='REDEEM'` / `status='simulated'` + activity-log + SSE-broadcast. Новый `queries.markPositionRedeemed` + `queries.getOpeningTraderForToken` (для атрибуции redeem-трейда к FK tracked_traders). UI: бирюзовый цвет для `REDEEM` в trade log и live feed. Первый скан на 184 позиции закрыл 44 (demo balance +$3,631).
+- **Tracked Traders — composite ranking with signed-log PnL, count transparency, on-demand refresh**: composite score is kept as the ranking signal, but `calculateScore` now uses a signed-log PnL component so traders with negative PnL get a negative pnl-score (was floored to 0 — let losers rank high via volume/winrate). Fetch buffer widened to `max(30, topN*3)` so enrichment failures + activity filter still leave ≥ N valid traders. Header shows `Tracked Traders (N/target)` with "Last refreshed Xm ago" tooltip. `↻ Refresh` button triggers immediate leaderboard refresh + reconcile. Settings save auto-triggers refresh when `top_traders_count` / `leaderboard_period` / `min_trader_volume` change (no more waiting for the hourly tick). New `POST /api/bot/refresh-leaderboard`.
+- **Tracked Traders — exit-only mode**: trader dropout (auto via leaderboard refresh or manual via × button) no longer silently loses SELL-signals for their open positions. Trader is moved to `exit_only` state — still polled, but only SELL executed. Auto-deactivates once no linked positions remain. `DELETE /api/traders/:address` endpoint, UI: Remove button, profile link (polymarket.com/profile/X), Open pos. column, traders count in header, EXIT-ONLY badge. New columns: `tracked_traders.exit_only`.
+- **Skipped trades persisted**: previously skipped results (risk check failed, slippage, max positions, etc.) were not saved to DB, so the dashboard didn't show why signals were being ignored. Now persisted with `error` field, tooltip on status-pill shows the reason.
+- **Settings hot-reload expanded**: `reloadConfigFromDb` now covers `maxOpenPositions`, `minMarketLiquidity`, `redeemCheckIntervalMs`, `sellMode`. Settings form has new Max Open Positions & Min Market Liquidity fields.
+- **P&L Chart fix**: snapshots now compute all-time P&L (was only today's); period axis uses hours/days properly (1H was effectively 24H before); x-axis ticks aligned to round times.
+- **Demo Account mode**: dry-run upgraded to paper trading with virtual balance ($1000 default), 2% commission per trade, balance validation, `POST /api/demo/reset`, dashboard Demo Balance card, Fee column in Trade Log, Reset Demo button in Settings.
+- **Polymarket API v1**: leaderboard endpoint migrated to `/v1/leaderboard` with updated params (`timePeriod`, `proxyWallet`, `vol`). Activity API: `usdcSize` field mapping fix that was blocking all trades.
+- **Settings hot-reload**: `reloadConfigFromDb()` — UI settings (bet size, trader count, commission, dry run) now apply at runtime without server restart. Called on Save, bot start, and leaderboard refresh.
+- **Wizard UX**: preflight returns `ready=true` in demo mode, wizard no longer blocks dashboard. Settings modal now has Trading/Wallet tabs — wallet connection accessible anytime.
+- **Tracker fix**: `action` field case-sensitivity (`"SELL"` vs `"sell"`) corrected.
+- **Positions: current prices**: `/api/positions` fetches live midpoint from CLOB API, calculates unrealized P&L per position.
+- **P&L Chart**: switched from broken `/api/activity` source to `/api/pnl-history` (pnl_snapshots table).
+- **Metrics fix**: P&L, win rate, and commission now include `simulated` trades (not just `filled`). Negative P&L sign displayed correctly.
+- **Live Trade Feed**: populates with last 20 trades on page load (not only via SSE).
+- **UI fixes**: bot start/stop button wired, form/wizard dark theme styles, chart infinite scroll fix.
+
+---
+
 ## TODO — Manual Testing & Verification
 
 ### Smoke test (no wallet needed)

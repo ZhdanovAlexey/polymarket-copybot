@@ -123,6 +123,28 @@ export class Executor {
   }
 
   /**
+   * Compute the USD size for a copied BUY based on the configured sizing mode.
+   *
+   * - `fixed`: always returns `config.betSizeUsd` (legacy behaviour).
+   * - `proportional`: scales linearly with the trader's own USD spend, then
+   *   clamps to a [min, max] multiplier band so we don't get whipsawed by
+   *   tiny "test" trades or wiped out by mega-trades.
+   *
+   * Falls back to fixed if `traderUsd` is missing/zero (broken API data).
+   */
+  private computeBetSize(traderUsd: number): number {
+    if (config.betSizingMode !== 'proportional' || !(traderUsd > 0)) {
+      return config.betSizeUsd;
+    }
+    const rawMul = traderUsd / config.betScaleAnchorUsd;
+    const mul = Math.min(
+      config.betScaleMaxMul,
+      Math.max(config.betScaleMinMul, rawMul),
+    );
+    return config.betSizeUsd * mul;
+  }
+
+  /**
    * Execute a BUY order (or simulate in dry run)
    */
   async executeBuy(trade: DetectedTrade): Promise<TradeResult> {
@@ -151,27 +173,42 @@ export class Executor {
         return this.createResult(trade, 'BUY', 'skipped', midpoint, 0, 0, slippageCheck.reason);
       }
 
-      // 4. Calculate size
-      const size = config.betSizeUsd / midpoint;
-      const totalUsd = config.betSizeUsd;
+      // 4. Calculate size — proportional to trader's USD when configured.
+      const totalUsd = this.computeBetSize(trade.usdValue);
+      const size = totalUsd / midpoint;
 
       // 5. Execute or simulate
       if (config.dryRun) {
+        const commission = totalUsd * (config.demoCommissionPct / 100);
+        const demoBalance = queries.getDemoBalance();
+
+        if (totalUsd + commission > demoBalance) {
+          log.warn({ needed: totalUsd + commission, balance: demoBalance }, 'Insufficient demo balance');
+          return this.createResult(trade, 'BUY', 'skipped', midpoint, 0, 0, 'Insufficient demo balance');
+        }
+
+        queries.setDemoBalance(demoBalance - totalUsd - commission);
+
         log.info({
           market: trade.marketTitle,
           outcome: trade.outcome,
           shares: size.toFixed(2),
           price: midpoint.toFixed(4),
           total: totalUsd.toFixed(2),
+          traderUsd: (trade.usdValue || 0).toFixed(2),
+          mul: config.betSizeUsd > 0 ? (totalUsd / config.betSizeUsd).toFixed(2) : 'n/a',
+          commission: commission.toFixed(2),
+          balanceAfter: (demoBalance - totalUsd - commission).toFixed(2),
         }, 'DRY RUN: Would BUY');
 
         const result = this.createResult(trade, 'BUY', 'simulated', midpoint, size, totalUsd);
         result.isDryRun = true;
+        result.commission = commission;
 
         // Save to DB
         queries.insertTrade(result);
         this.portfolio.updateAfterBuy(result);
-        queries.insertActivity('trade', `DRY RUN BUY: ${trade.marketTitle} ${trade.outcome} - ${size.toFixed(2)} shares @ $${midpoint.toFixed(4)}`);
+        queries.insertActivity('trade', `DRY RUN BUY: ${trade.marketTitle} ${trade.outcome} - ${size.toFixed(2)} shares @ $${midpoint.toFixed(4)} (fee: $${commission.toFixed(2)})`);
 
         return result;
       }
@@ -296,6 +333,10 @@ export class Executor {
 
       // 4. Execute or simulate
       if (config.dryRun) {
+        const commission = totalUsd * (config.demoCommissionPct / 100);
+        const demoBalance = queries.getDemoBalance();
+        queries.setDemoBalance(demoBalance + totalUsd - commission);
+
         const pnl = totalUsd - position.totalInvested;
         log.info({
           market: trade.marketTitle,
@@ -303,14 +344,17 @@ export class Executor {
           price: bestBid.toFixed(4),
           total: totalUsd.toFixed(2),
           pnl: pnl.toFixed(2),
+          commission: commission.toFixed(2),
+          balanceAfter: (demoBalance + totalUsd - commission).toFixed(2),
         }, 'DRY RUN: Would SELL');
 
         const result = this.createResult(trade, 'SELL', 'simulated', bestBid, size, totalUsd);
         result.isDryRun = true;
+        result.commission = commission;
 
         queries.insertTrade(result);
         this.portfolio.updateAfterSell(result);
-        queries.insertActivity('trade', `DRY RUN SELL: ${trade.marketTitle} - ${size.toFixed(2)} shares @ $${bestBid.toFixed(4)} (P&L: $${pnl.toFixed(2)})`);
+        queries.insertActivity('trade', `DRY RUN SELL: ${trade.marketTitle} - ${size.toFixed(2)} shares @ $${bestBid.toFixed(4)} (P&L: $${pnl.toFixed(2)}, fee: $${commission.toFixed(2)})`);
 
         return result;
       }
@@ -407,11 +451,47 @@ export class Executor {
    * Process a detected trade (route to buy or sell)
    */
   async processTrade(trade: DetectedTrade): Promise<TradeResult> {
+    // If trader is in exit-only mode, ignore their BUY signals but still allow
+    // SELLs (so we can exit positions they originally opened).
     if (trade.action === 'buy') {
-      return this.executeBuy(trade);
-    } else {
-      return this.executeSell(trade);
+      const trader = queries.getTraderByAddress(trade.traderAddress);
+      if (trader?.exitOnly) {
+        log.info(
+          { trader: trade.traderName, market: trade.marketTitle },
+          'Skipping BUY: trader in exit-only mode',
+        );
+        const skipped = this.createResult(
+          trade,
+          'BUY',
+          'skipped',
+          0,
+          0,
+          0,
+          'Trader in exit-only mode',
+        );
+        try {
+          queries.insertTrade(skipped);
+        } catch (err) {
+          log.error({ err }, 'Failed to persist exit-only skipped trade');
+        }
+        return skipped;
+      }
     }
+
+    const result =
+      trade.action === 'buy' ? await this.executeBuy(trade) : await this.executeSell(trade);
+
+    // Persist skipped trades too so the dashboard shows *why* we're not copying.
+    // (simulated/filled/failed are already written by the execute* paths.)
+    if (result.status === 'skipped') {
+      try {
+        queries.insertTrade(result);
+      } catch (err) {
+        log.error({ err }, 'Failed to persist skipped trade');
+      }
+    }
+
+    return result;
   }
 
   private createResult(
@@ -442,6 +522,7 @@ export class Executor {
       originalTraderSize: trade.size,
       originalTraderPrice: trade.price,
       isDryRun: config.dryRun,
+      commission: 0,
     };
   }
 }

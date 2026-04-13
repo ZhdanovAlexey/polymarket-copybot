@@ -18,11 +18,11 @@ export class DataApi {
     limit?: number,
   ): Promise<LeaderboardEntry[]> {
     const params = new URLSearchParams();
-    params.set('period', period ?? config.leaderboardPeriod);
-    params.set('orderBy', orderBy ?? 'pnl');
+    params.set('timePeriod', period ?? config.leaderboardPeriod);
+    params.set('orderBy', (orderBy ?? 'pnl').toUpperCase());
     params.set('limit', String(limit ?? config.topTradersCount));
 
-    const url = `${this.baseUrl}/leaderboard?${params}`;
+    const url = `${this.baseUrl}/v1/leaderboard?${params}`;
     log.debug({ url }, 'Fetching leaderboard');
 
     const data = await this.fetchJson<Record<string, unknown>[]>(url);
@@ -138,11 +138,11 @@ function str(v: unknown): string {
 
 function mapLeaderboardEntry(raw: Record<string, unknown>): LeaderboardEntry {
   return {
-    address: str(raw.address ?? raw.userAddress),
-    name: str(raw.name ?? raw.username ?? raw.displayName ?? ''),
+    address: str(raw.proxyWallet ?? raw.address ?? raw.userAddress),
+    name: str(raw.userName ?? raw.name ?? raw.username ?? raw.displayName ?? ''),
     profileImage: raw.profileImage != null ? str(raw.profileImage) : undefined,
     pnl: num(raw.pnl ?? raw.profit),
-    volume: num(raw.volume),
+    volume: num(raw.vol ?? raw.volume),
     markets_traded: num(raw.markets_traded ?? raw.marketsTraded ?? raw.numMarkets),
     positions_value: num(raw.positions_value ?? raw.positionsValue ?? raw.portfolioValue),
     rank: num(raw.rank),
@@ -164,7 +164,7 @@ function mapActivityEntry(raw: Record<string, unknown>): ActivityEntry {
     outcome: str(raw.outcome),
     size: num(raw.size ?? raw.amount),
     price: num(raw.price),
-    usd_value: num(raw.usd_value ?? raw.usdValue ?? raw.value),
+    usd_value: num(raw.usd_value ?? raw.usdValue ?? raw.usdcSize ?? raw.value),
     transaction_hash: str(raw.transaction_hash ?? raw.transactionHash ?? raw.txHash),
   };
 }

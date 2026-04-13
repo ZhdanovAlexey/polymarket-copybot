@@ -4,6 +4,7 @@ import { createLogger } from './utils/logger.js';
 import { Bot } from './core/bot.js';
 import { startDashboard } from './dashboard/server.js';
 import { setBot } from './dashboard/routes/api.js';
+import { setBot as setAuthBot } from './dashboard/routes/auth.js';
 
 const log = createLogger('main');
 
@@ -32,6 +33,7 @@ async function main(): Promise<void> {
 
   // Make bot accessible to API routes
   setBot(bot);
+  setAuthBot(bot);
 
   // Start dashboard
   startDashboard();

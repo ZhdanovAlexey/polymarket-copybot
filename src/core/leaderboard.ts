@@ -23,14 +23,17 @@ export class Leaderboard {
   async fetchAndScore(): Promise<TrackedTrader[]> {
     log.info('Fetching leaderboard...');
 
-    // 1. Get raw leaderboard from Data API
+    // 1. Get raw leaderboard from Data API (already sorted by PnL DESC).
+    //    Use a generous buffer so enrichment failures + activity filter still
+    //    leave us with at least `topTradersCount` valid entries.
+    const fetchLimit = Math.max(30, config.topTradersCount * 3);
     const entries = await this.dataApi.getLeaderboard(
       config.leaderboardPeriod,
       'pnl',
-      config.topTradersCount * 2, // fetch extra to have buffer after filtering
+      fetchLimit,
     );
 
-    log.info({ count: entries.length }, 'Leaderboard entries fetched');
+    log.info({ requested: fetchLimit, fetched: entries.length }, 'Leaderboard entries fetched');
 
     // 2. Enrich each trader with win rate from their trade history
     const scored: TrackedTrader[] = [];
@@ -51,6 +54,7 @@ export class Leaderboard {
           lastSeenTimestamp: Math.floor(Date.now() / 1000),
           addedAt: new Date().toISOString(),
           active: true,
+          exitOnly: false,
           probation: false,
           probationTradesLeft: 0,
         });
@@ -67,11 +71,14 @@ export class Leaderboard {
     // 3. Filter
     const filtered = this.filterByActivity(scored);
 
-    // 4. Sort by score and take top N
+    // 4. Rank by composite score DESC and take top N.
     filtered.sort((a, b) => b.score - a.score);
     const topN = filtered.slice(0, config.topTradersCount);
 
-    log.info({ total: scored.length, filtered: topN.length }, 'Scoring complete');
+    log.info(
+      { requested: config.topTradersCount, scored: scored.length, filtered: topN.length },
+      'Scoring complete',
+    );
 
     return topN;
   }
@@ -82,8 +89,11 @@ export class Leaderboard {
    */
   calculateScore(entry: LeaderboardEntry, winRate: number, tradesCount: number): number {
     // Normalize each component to 0-100 scale
-    // PnL: use log scale, cap at reasonable max
-    const pnlScore = Math.min(100, Math.max(0, (Math.log10(Math.max(1, entry.pnl)) / 7) * 100));
+    // PnL: signed log scale so traders with negative PnL are penalised
+    // (previously floored to 0, letting losers rank high via volume/winrate).
+    const pnlSign = entry.pnl >= 0 ? 1 : -1;
+    const pnlMagnitude = Math.min(100, (Math.log10(Math.max(1, Math.abs(entry.pnl))) / 7) * 100);
+    const pnlScore = pnlSign * pnlMagnitude;
 
     // Win rate: direct percentage
     const winRateScore = winRate * 100;

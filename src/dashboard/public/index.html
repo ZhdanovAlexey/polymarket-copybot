@@ -38,7 +38,7 @@
     <!-- P&L Chart -->
     <section id="chart-section" class="card">
       <div class="card-header">
-        <h2>P&amp;L Chart</h2>
+        <h2>P&amp;L Chart <span id="chart-meta" class="text-muted" style="font-weight:400;font-size:0.82rem;">--</span></h2>
         <div class="chart-period-toggles">
           <button class="period-btn active" data-period="1h">1H</button>
           <button class="period-btn" data-period="24h">24H</button>
@@ -47,22 +47,19 @@
           <button class="period-btn" data-period="all">ALL</button>
         </div>
       </div>
-      <canvas id="pnl-chart" height="200"></canvas>
+      <div class="chart-container">
+        <canvas id="pnl-chart"></canvas>
+      </div>
     </section>
 
-    <!-- Two column: Traders + Live Feed -->
-    <section class="two-columns">
-      <div id="traders-section" class="card">
-        <h2>Tracked Traders</h2>
-        <div id="traders-list">
-          <!-- Populated by traders.js -->
-        </div>
+    <!-- Tracked Traders -->
+    <section id="traders-section" class="card">
+      <div class="card-header">
+        <h2>Tracked Traders <span id="traders-count" class="text-muted" style="font-weight:400;font-size:0.9rem;">(0/0)</span></h2>
+        <button id="btn-refresh-traders" class="btn btn-small" title="Refresh leaderboard now">&#x21bb; Refresh</button>
       </div>
-      <div id="live-feed-section" class="card">
-        <h2>Live Trade Feed</h2>
-        <div id="live-feed">
-          <p class="empty-state">Waiting for trades...</p>
-        </div>
+      <div id="traders-list">
+        <!-- Populated by traders.js -->
       </div>
     </section>
 
@@ -83,16 +80,17 @@
         </div>
       </div>
       <div class="table-wrapper">
-        <table id="trade-log-table">
+        <table id="trade-log-table" class="sortable">
           <thead>
             <tr>
-              <th>Time</th>
-              <th>Trader</th>
-              <th>Market</th>
-              <th>Side</th>
-              <th>Outcome</th>
-              <th>Amount</th>
-              <th>Status</th>
+              <th data-sort="timestamp">Time</th>
+              <th data-sort="traderName">Trader</th>
+              <th data-sort="marketTitle">Market</th>
+              <th data-sort="side">Side</th>
+              <th data-sort="outcome">Outcome</th>
+              <th data-sort="totalUsd">Amount</th>
+              <th data-sort="commission">Fee</th>
+              <th data-sort="status">Status</th>
             </tr>
           </thead>
           <tbody id="trade-log-body">
@@ -102,22 +100,55 @@
       </div>
     </section>
 
+    <!-- Closed Positions (round-trip history) -->
+    <section id="closed-positions-section" class="card">
+      <div class="card-header">
+        <h2>Closed Positions <span id="closed-positions-count" class="text-muted" style="font-weight:400;font-size:0.9rem;">(0)</span></h2>
+        <span id="closed-positions-total" class="text-muted" style="font-size:0.85rem;">Realized P&amp;L: --</span>
+      </div>
+      <div class="table-wrapper">
+        <table id="closed-positions-table" class="sortable">
+          <thead>
+            <tr>
+              <th data-sort="traderName">Trader</th>
+              <th data-sort="marketTitle">Market</th>
+              <th data-sort="outcome">Outcome</th>
+              <th data-sort="totalShares">Shares</th>
+              <th data-sort="avgPrice">Open $</th>
+              <th data-sort="closeAvgPrice">Close $</th>
+              <th data-sort="totalInvested">Invested</th>
+              <th data-sort="closeUsd">Received</th>
+              <th data-sort="realizedPnl">P&amp;L</th>
+              <th data-sort="status">Status</th>
+              <th data-sort="closedAt">Closed</th>
+            </tr>
+          </thead>
+          <tbody id="closed-positions-body">
+            <!-- Populated by app.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- Open Positions -->
     <section id="positions-section" class="card">
       <div class="card-header">
-        <h2>Open Positions</h2>
-        <span id="positions-total-value">Total: --</span>
+        <h2>Open Positions <span id="open-positions-count" class="text-muted" style="font-weight:400;font-size:0.9rem;">(0)</span></h2>
+        <span id="positions-total-value" class="text-muted" style="font-size:0.85rem;">--</span>
       </div>
       <div class="table-wrapper">
-        <table id="positions-table">
+        <table id="positions-table" class="sortable">
           <thead>
             <tr>
-              <th>Market</th>
-              <th>Outcome</th>
-              <th>Shares</th>
-              <th>Avg Price</th>
-              <th>Current</th>
-              <th>P&amp;L</th>
+              <th data-sort="traderName">Trader</th>
+              <th data-sort="marketTitle">Market</th>
+              <th data-sort="outcome">Outcome</th>
+              <th data-sort="totalShares">Shares</th>
+              <th data-sort="avgPrice">Avg Price</th>
+              <th data-sort="curPrice">Current</th>
+              <th data-sort="totalInvested">Invested</th>
+              <th data-sort="pnl">P&amp;L</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="positions-body">
@@ -141,7 +172,6 @@
   </footer>
 
   <!-- Scripts -->
-  <script type="module" src="/js/charts.js"></script>
   <script type="module" src="/js/sse-client.js"></script>
   <script type="module" src="/js/dashboard.js"></script>
   <script type="module" src="/js/traders.js"></script>

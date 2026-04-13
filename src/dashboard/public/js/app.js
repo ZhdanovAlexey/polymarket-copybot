@@ -23,6 +23,17 @@ let pnlChart = null;
 let refreshTimer = null;
 let botStatus = { running: false, uptime: 0, version: '2.0.0' };
 
+// Last-fetched raw arrays for tables — kept so sort-click re-renders without refetch.
+let lastOpenPositions = [];
+let lastClosedPositions = [];
+
+// Per-table sort state: {key, dir}
+const sortState = {
+  'positions-table': { key: null, dir: 'asc' },
+  'closed-positions-table': { key: 'closedAt', dir: 'desc' },
+  'trade-log-table': { key: 'timestamp', dir: 'desc' },
+};
+
 /* ================================================================
    Fetch helper
    ================================================================ */
@@ -44,6 +55,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initSettings();
   initChart();
   wireButtons();
+  initTableSorting();
+  wireManualCloseHandlers();
   refreshAll();
   startRefreshLoop();
   startUptimeTicker();
@@ -66,6 +79,7 @@ async function refreshAll() {
     refreshTraders(),
     refreshTrades(),
     refreshPositions(),
+    refreshClosedPositions(),
     refreshChart(),
   ]);
 }
@@ -101,11 +115,15 @@ function renderStatus(data) {
     }
   }
 
-  // Update dry run indicator
+  // Update dry run indicator and demo balance
   if (data.dryRun) {
     const badge2 = document.getElementById('bot-status');
     if (badge2 && data.running) {
-      badge2.textContent = '\u25CF Running (DRY)';
+      badge2.textContent = '\u25CF Running (DEMO)';
+    }
+    if (data.demoBalance != null) {
+      const usdcEl = document.getElementById('usdc-balance');
+      if (usdcEl) usdcEl.textContent = `Demo: $${data.demoBalance.toFixed(2)}`;
     }
   }
 }
@@ -157,39 +175,139 @@ async function refreshPositions() {
 function renderPositions(positions) {
   const tbody = document.getElementById('positions-body');
   const totalEl = document.getElementById('positions-total-value');
+  const countEl = document.getElementById('open-positions-count');
   if (!tbody) return;
 
-  if (!Array.isArray(positions) || positions.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No open positions</td></tr>';
-    if (totalEl) totalEl.textContent = 'Total: $0.00';
+  if (Array.isArray(positions)) lastOpenPositions = positions;
+  const list = sortRows(lastOpenPositions, 'positions-table');
+  if (countEl) countEl.textContent = `(${list.length})`;
+
+  // Totals: invested (cost basis) + current value (mark-to-market) + unrealized P&L
+  let totalInvested = 0;
+  let totalCurrent = 0;
+  let totalPnl = 0;
+  let hasCurrent = false;
+  for (const p of list) {
+    totalInvested += Number(p.totalInvested || 0);
+    if (p.currentValue != null) {
+      totalCurrent += Number(p.currentValue || 0);
+      totalPnl += Number(p.pnl || 0);
+      hasCurrent = true;
+    }
+  }
+
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No open positions</td></tr>';
+    if (totalEl) totalEl.textContent = '--';
     return;
   }
 
-  let totalValue = 0;
-
-  tbody.innerHTML = positions
+  tbody.innerHTML = list
     .map((p) => {
-      const currentValue = (p.totalShares || 0) * (p.avgPrice || 0);
-      totalValue += p.totalInvested || 0;
-      const pnl = currentValue - (p.totalInvested || 0);
+      const curPrice = p.curPrice != null ? p.curPrice : null;
+      const pnl = p.pnl != null ? p.pnl : 0;
       const pnlClass = pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
-      const pnlSign = pnl >= 0 ? '+' : '';
+      const pnlSign = pnl >= 0 ? '+' : '-';
+      const curPriceStr = curPrice != null ? `$${curPrice.toFixed(4)}` : '--';
+      const traderLabel = p.traderName || (p.traderAddress ? p.traderAddress.slice(0, 6) + '\u2026' + p.traderAddress.slice(-4) : '--');
 
       return `
-        <tr>
-          <td title="${escapeHtml(p.marketTitle)}">${escapeHtml(truncate(p.marketTitle, 45))}</td>
+        <tr data-token-id="${escapeHtml(p.tokenId)}">
+          <td title="${escapeHtml(p.traderAddress || '')}">${escapeHtml(truncate(traderLabel, 14))}</td>
+          <td title="${escapeHtml(p.marketTitle)}">${marketLink(p.marketSlug, p.marketTitle, 45)}</td>
           <td>${escapeHtml(p.outcome || '--')}</td>
           <td>${(p.totalShares || 0).toFixed(2)}</td>
           <td>$${(p.avgPrice || 0).toFixed(4)}</td>
-          <td>--</td>
+          <td>${curPriceStr}</td>
+          <td>$${(p.totalInvested || 0).toFixed(2)}</td>
           <td class="${pnlClass}">${pnlSign}$${Math.abs(pnl).toFixed(2)}</td>
+          <td><button class="btn btn-small btn-close-position" data-token-id="${escapeHtml(p.tokenId)}" title="Close this position at current midpoint (demo)">Close</button></td>
         </tr>
       `;
     })
     .join('');
 
   if (totalEl) {
-    totalEl.textContent = `Total: $${totalValue.toFixed(2)}`;
+    const pnlClass = totalPnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+    const sign = totalPnl >= 0 ? '+' : '-';
+    const currentPart = hasCurrent
+      ? ` &middot; Current: <strong>$${totalCurrent.toFixed(2)}</strong> &middot; Unrealized: <span class="${pnlClass}">${sign}$${Math.abs(totalPnl).toFixed(2)}</span>`
+      : '';
+    totalEl.innerHTML = `Invested: <strong>$${totalInvested.toFixed(2)}</strong>${currentPart}`;
+  }
+}
+
+/* ---- Closed Positions (round-trip) ---- */
+
+async function refreshClosedPositions() {
+  try {
+    const data = await fetchJson('/api/positions/closed?limit=200');
+    renderClosedPositions(data);
+  } catch (err) {
+    console.error('Failed to fetch closed positions:', err);
+  }
+}
+
+function renderClosedPositions(rows) {
+  const tbody = document.getElementById('closed-positions-body');
+  const countEl = document.getElementById('closed-positions-count');
+  const totalEl = document.getElementById('closed-positions-total');
+  if (!tbody) return;
+
+  if (Array.isArray(rows)) lastClosedPositions = rows;
+  const list = sortRows(lastClosedPositions, 'closed-positions-table');
+  if (countEl) countEl.textContent = `(${list.length})`;
+
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No closed positions yet</td></tr>';
+    if (totalEl) totalEl.textContent = 'Realized P&L: $0.00';
+    return;
+  }
+
+  let totalPnl = 0;
+
+  tbody.innerHTML = list
+    .map((p) => {
+      const pnl = Number(p.realizedPnl || 0);
+      totalPnl += pnl;
+      const pnlClass = pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+      const pnlSign = pnl >= 0 ? '+' : '-';
+
+      let statusBadge;
+      if (p.status === 'redeemed') {
+        const won = p.closeAvgPrice >= 0.99;
+        statusBadge = won
+          ? '<span class="status-pill simulated" title="Market resolved — won">redeemed (won)</span>'
+          : '<span class="status-pill failed" title="Market resolved — lost">redeemed (lost)</span>';
+      } else {
+        statusBadge = '<span class="status-pill filled">closed</span>';
+      }
+
+      const closedAt = p.closedAt ? relativeTime(p.closedAt) : '--';
+      const traderLabel = p.traderName || (p.traderAddress ? p.traderAddress.slice(0, 6) + '\u2026' + p.traderAddress.slice(-4) : '--');
+
+      return `
+        <tr>
+          <td title="${escapeHtml(p.traderAddress || '')}">${escapeHtml(truncate(traderLabel, 14))}</td>
+          <td title="${escapeHtml(p.marketTitle)}">${marketLink(p.marketSlug, p.marketTitle, 40)}</td>
+          <td>${escapeHtml(p.outcome || '--')}</td>
+          <td>${Number(p.totalShares || 0).toFixed(2)}</td>
+          <td>$${Number(p.avgPrice || 0).toFixed(4)}</td>
+          <td>$${Number(p.closeAvgPrice || 0).toFixed(4)}</td>
+          <td>$${Number(p.totalInvested || 0).toFixed(2)}</td>
+          <td>$${Number(p.closeUsd || 0).toFixed(2)}</td>
+          <td class="${pnlClass}">${pnlSign}$${Math.abs(pnl).toFixed(2)}</td>
+          <td>${statusBadge}</td>
+          <td title="${escapeHtml(p.closedAt || '')}">${closedAt}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  if (totalEl) {
+    const sign = totalPnl >= 0 ? '+' : '-';
+    const cls = totalPnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+    totalEl.innerHTML = `Realized P&L: <span class="${cls}">${sign}$${Math.abs(totalPnl).toFixed(2)}</span>`;
   }
 }
 
@@ -246,7 +364,11 @@ function initChart() {
       scales: {
         x: {
           grid: { color: 'rgba(48, 54, 61, 0.5)' },
-          ticks: { color: '#8b949e', maxTicksLimit: 10 },
+          ticks: {
+            color: '#8b949e',
+            autoSkip: false,
+            maxRotation: 0,
+          },
         },
         y: {
           grid: { color: 'rgba(48, 54, 61, 0.5)' },
@@ -278,12 +400,15 @@ async function refreshChart() {
   const periodMap = { '1h': '1h', '24h': '24h', '7d': '7d', '30d': '30d', all: '365d' };
   const period = periodMap[currentPeriod] || '24h';
 
-  try {
-    const snapshots = await fetchJson(`/api/activity?type=pnl_snapshot&limit=200`);
+  const metaEl = document.getElementById('chart-meta');
 
-    // If no real snapshot data, try to use pnl_snapshots indirectly or show empty
-    // For now, use the activity endpoint which may not have snapshot data yet.
-    // We'll gracefully handle empty data.
+  try {
+    const snapshots = await fetchJson(`/api/pnl-history?period=${period}`);
+
+    if (metaEl) {
+      const label = currentPeriod === 'all' ? 'all time' : currentPeriod.toUpperCase();
+      metaEl.textContent = `${snapshots.length} snapshot${snapshots.length === 1 ? '' : 's'} · ${label}`;
+    }
 
     if (!Array.isArray(snapshots) || snapshots.length === 0) {
       pnlChart.data.labels = [];
@@ -292,23 +417,29 @@ async function refreshChart() {
       return;
     }
 
-    // Parse activity entries that have pnl data in their details
+    // pnl-history returns newest-first, reverse for chronological order
     const points = snapshots
-      .filter((s) => s.details)
-      .map((s) => {
-        try {
-          const d = JSON.parse(s.details);
-          return { time: new Date(s.timestamp), pnl: d.totalPnl ?? 0 };
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean)
+      .map((s) => ({ time: new Date(s.timestamp + 'Z'), pnl: s.totalPnl ?? 0 }))
       .reverse();
 
-    pnlChart.data.labels = points.map((p) =>
-      p.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    );
+    // Compute labels, rounding to nearest 5 min, then keep only "round" ticks based on span.
+    // Aim for ~8-12 visible labels across the whole chart.
+    const spanMs =
+      points.length > 1 ? points[points.length - 1].time - points[0].time : 0;
+    // Pick a step that gives <=12 labels: 5m, 15m, 30m, 1h, 2h, 4h, 12h, 1d
+    const candidateSteps = [5, 15, 30, 60, 120, 240, 720, 1440];
+    const targetCount = 10;
+    const stepMin =
+      candidateSteps.find((s) => spanMs / (s * 60 * 1000) <= targetCount) ?? 1440;
+
+    const ms5 = 5 * 60 * 1000;
+    pnlChart.data.labels = points.map((p) => {
+      const rounded = new Date(Math.round(p.time.getTime() / ms5) * ms5);
+      const totalMinutesOfDay = rounded.getHours() * 60 + rounded.getMinutes();
+      // Show label only if aligned to stepMin; otherwise empty string (point still plotted)
+      if (totalMinutesOfDay % stepMin !== 0) return '';
+      return rounded.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    });
     pnlChart.data.datasets[0].data = points.map((p) => p.pnl);
 
     // Color the fill based on final value
@@ -338,10 +469,17 @@ function wireButtons() {
   if (toggleBtn) {
     toggleBtn.addEventListener('click', async () => {
       try {
-        // Toggle bot start/stop — will be wired in Stage 10
-        showToast('info', 'Bot control will be available in a future update.');
+        const action = botStatus.running ? 'stop' : 'start';
+        toggleBtn.disabled = true;
+        const res = await fetch(`${API_BASE}/api/bot/${action}`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast('success', data.message || `Bot ${action}ed`);
+        await refreshStatus();
       } catch (err) {
         showToast('error', `Failed: ${err.message}`);
+      } finally {
+        toggleBtn.disabled = false;
       }
     });
   }
@@ -419,6 +557,13 @@ function truncate(str, maxLen) {
   return str.slice(0, maxLen - 1) + '\u2026';
 }
 
+function marketLink(slug, title, maxLen) {
+  const text = escapeHtml(truncate(title || slug || '--', maxLen));
+  if (!slug) return text;
+  const url = `https://polymarket.com/event/${encodeURIComponent(slug)}`;
+  return `<a class="market-link" href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
+
 function escapeHtml(str) {
   if (!str) return '';
   return String(str)
@@ -426,4 +571,120 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/**
+ * Generic click-to-sort helper. Tables marked `class="sortable"` with
+ * `<th data-sort="key">` headers use this. Clicking a header cycles
+ * asc → desc → asc for that column.
+ */
+function initTableSorting() {
+  const tables = document.querySelectorAll('table.sortable');
+  tables.forEach((table) => {
+    const id = table.id;
+    if (!id) return;
+    if (!sortState[id]) sortState[id] = { key: null, dir: 'asc' };
+
+    const ths = table.querySelectorAll('thead th[data-sort]');
+    ths.forEach((th) => {
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', () => {
+        const key = th.dataset.sort;
+        const cur = sortState[id];
+        if (cur.key === key) {
+          cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+          cur.key = key;
+          cur.dir = 'asc';
+        }
+        updateSortIndicators(table);
+        reRenderTable(id);
+      });
+    });
+    updateSortIndicators(table);
+  });
+}
+
+function updateSortIndicators(table) {
+  const state = sortState[table.id];
+  table.querySelectorAll('thead th[data-sort]').forEach((th) => {
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (state && th.dataset.sort === state.key) {
+      th.classList.add(state.dir === 'asc' ? 'sort-asc' : 'sort-desc');
+    }
+  });
+}
+
+/** Apply current sort state to a row array. Returns a new array. */
+function sortRows(rows, tableId) {
+  const state = sortState[tableId];
+  if (!state?.key || !Array.isArray(rows)) return rows ?? [];
+  const { key, dir } = state;
+  const mul = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = a?.[key];
+    const bv = b?.[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mul;
+    return String(av).localeCompare(String(bv)) * mul;
+  });
+}
+
+function reRenderTable(tableId) {
+  if (tableId === 'positions-table') renderPositions(null);
+  else if (tableId === 'closed-positions-table') renderClosedPositions(null);
+  else if (tableId === 'trade-log-table' && window.__rerenderTradeLog) {
+    window.__rerenderTradeLog();
+  }
+}
+
+// Expose a trade-log-specific sort bound to the shared sortState bucket.
+window.__sortTradeLog = (rows) => sortRows(rows, 'trade-log-table');
+
+/** Manual position close — delegated click on .btn-close-position */
+function wireManualCloseHandlers() {
+  const tbody = document.getElementById('positions-body');
+  if (!tbody) return;
+  tbody.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn-close-position');
+    if (!btn) return;
+    const tokenId = btn.dataset.tokenId;
+    if (!tokenId) return;
+    if (!confirm('Close this position at current midpoint?')) return;
+
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const res = await fetch(`/api/positions/${encodeURIComponent(tokenId)}/close`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (window.__showToast) {
+        const pnlStr = data.pnl >= 0 ? `+$${data.pnl.toFixed(2)}` : `-$${Math.abs(data.pnl).toFixed(2)}`;
+        window.__showToast('success', `Closed. Net: $${data.netPayout.toFixed(2)} (P&L ${pnlStr})`);
+      }
+      refreshAll();
+    } catch (err) {
+      if (window.__showToast) window.__showToast('error', `Close failed: ${err.message}`);
+      btn.disabled = false;
+      btn.textContent = 'Close';
+    }
+  });
+}
+
+function relativeTime(timestamp) {
+  if (!timestamp) return '--';
+  const t = new Date(timestamp).getTime();
+  if (isNaN(t)) return '--';
+  const diffMs = Date.now() - t;
+  if (diffMs < 0) return 'just now';
+  const s = Math.floor(diffMs / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
