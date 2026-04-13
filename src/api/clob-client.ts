@@ -175,6 +175,31 @@ export class ClobClientWrapper {
     }
   }
 
+  /**
+   * Return resolution status for a market.
+   * Closed markets usually have exactly one token with winner=true.
+   * Returns winnerTokenId=null if closed without a declared winner (rare: invalid/refunded markets).
+   */
+  async getMarketResolution(
+    conditionId: string,
+  ): Promise<{ closed: boolean; winnerTokenId: string | null }> {
+    const url = `${this.baseUrl}/markets/${encodeURIComponent(conditionId)}`;
+    const res = await fetchWithRetry(url);
+    if (!res.ok) {
+      throw new Error(`CLOB markets request failed: ${res.status} ${res.statusText}`);
+    }
+    const data = (await res.json()) as {
+      closed?: boolean;
+      tokens?: Array<{ token_id: string; winner?: boolean }>;
+    };
+    const closed = Boolean(data.closed);
+    const winner = (data.tokens ?? []).find((t) => t.winner === true);
+    return {
+      closed,
+      winnerTokenId: winner?.token_id ?? null,
+    };
+  }
+
   async getOrderBook(tokenId: string): Promise<OrderBookResponse> {
     const url = `${this.baseUrl}/book?token_id=${encodeURIComponent(tokenId)}`;
     log.debug({ tokenId, url }, 'fetching order book');
