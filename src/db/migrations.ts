@@ -171,6 +171,7 @@ const MIGRATIONS: string[] = [
     token_ids TEXT,
     fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE INDEX IF NOT EXISTS bt_markets_closed ON bt_markets(closed)`,
 
   // bt_market_resolutions — Stage E: CLOB tokens[].winner for closed markets
   `CREATE TABLE IF NOT EXISTS bt_market_resolutions (

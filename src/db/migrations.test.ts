@@ -44,6 +44,12 @@ test('migration creates bt_market_resolutions', () => {
   assert.ok(tables().includes('bt_market_resolutions'));
 });
 
+test('migration creates bt_markets_closed index', () => {
+  initDb(':memory:');
+  const idx = indexes('bt_markets');
+  assert.ok(idx.some((n) => n.includes('closed')), 'expected closed index on bt_markets');
+});
+
 test('running initDb twice is idempotent (no exception)', () => {
   initDb(':memory:');
   closeDb();
