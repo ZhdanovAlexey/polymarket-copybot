@@ -7,8 +7,14 @@ import {
   bulkInsertActivity,
   maxActivityTimestamp,
   countActivityForAddress,
+  upsertMarket,
+  getMarket,
+  conditionIdsMissingFromMarkets,
+  closedConditionIdsMissingResolution,
+  upsertResolution,
+  getResolution,
 } from './bt-queries.js';
-import type { BtUniverseEntry, BtTradeActivity } from '../types.js';
+import type { BtUniverseEntry, BtTradeActivity, BtMarket, BtMarketResolution } from '../types.js';
 
 beforeEach(() => initDb(':memory:'));
 afterEach(() => closeDb());
@@ -64,4 +70,50 @@ test('bulkInsertActivity: duplicate id ignored (INSERT OR IGNORE)', () => {
   bulkInsertActivity([row]);
   bulkInsertActivity([row]);  // should not throw
   assert.equal(countActivityForAddress('0xA'), 1);
+});
+
+test('upsertMarket + getMarket + conditionIdsMissingFromMarkets', () => {
+  const m: BtMarket = {
+    conditionId: 'c1', question: 'Will X?', slug: 'will-x',
+    endDate: '2026-05-01', volume: 1000, liquidity: 500,
+    negRisk: 0, closed: 1, tokenIds: '["tokA","tokB"]',
+  };
+  upsertMarket(m);
+  const loaded = getMarket('c1');
+  assert.ok(loaded);
+  assert.equal(loaded!.question, 'Will X?');
+  assert.equal(loaded!.closed, 1);
+
+  // c2 is referenced in activity but not in bt_markets
+  bulkInsertActivity([{
+    id: 'tX', address: '0xA', timestamp: 100, tokenId: 'tokC', conditionId: 'c2',
+    action: 'buy', price: 0.5, size: 1, usdValue: 0.5, marketSlug: '',
+  }]);
+  const missing = conditionIdsMissingFromMarkets();
+  assert.ok(missing.includes('c2'));
+  assert.ok(!missing.includes('c1'), 'c1 already in bt_markets');
+});
+
+test('closedConditionIdsMissingResolution: closed=1 AND no resolution row', () => {
+  upsertMarket({
+    conditionId: 'cClosed', question: '', slug: '',
+    endDate: null, volume: 0, liquidity: 0,
+    negRisk: 0, closed: 1, tokenIds: '[]',
+  });
+  upsertMarket({
+    conditionId: 'cOpen', question: '', slug: '',
+    endDate: null, volume: 0, liquidity: 0,
+    negRisk: 0, closed: 0, tokenIds: '[]',
+  });
+  const missing = closedConditionIdsMissingResolution();
+  assert.ok(missing.includes('cClosed'));
+  assert.ok(!missing.includes('cOpen'));
+
+  upsertResolution({ conditionId: 'cClosed', winnerTokenId: 'tokA', resolvedAt: '' });
+  const afterUpsert = closedConditionIdsMissingResolution();
+  assert.ok(!afterUpsert.includes('cClosed'));
+
+  const res = getResolution('cClosed');
+  assert.ok(res);
+  assert.equal(res!.winnerTokenId, 'tokA');
 });

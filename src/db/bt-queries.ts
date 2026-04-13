@@ -76,3 +76,117 @@ export function distinctConditionIds(): string[] {
     .all() as Array<{ condition_id: string }>;
   return rows.map((r) => r.condition_id);
 }
+
+// ============================================================
+// bt_markets
+// ============================================================
+
+export function upsertMarket(m: BtMarket): void {
+  getDb()
+    .prepare(
+      `INSERT INTO bt_markets
+         (condition_id, question, slug, end_date, volume, liquidity, neg_risk, closed, token_ids)
+       VALUES (@conditionId, @question, @slug, @endDate, @volume, @liquidity, @negRisk, @closed, @tokenIds)
+       ON CONFLICT(condition_id) DO UPDATE SET
+         question = excluded.question,
+         slug = excluded.slug,
+         end_date = excluded.end_date,
+         volume = excluded.volume,
+         liquidity = excluded.liquidity,
+         neg_risk = excluded.neg_risk,
+         closed = excluded.closed,
+         token_ids = excluded.token_ids,
+         fetched_at = CURRENT_TIMESTAMP`,
+    )
+    .run(m);
+}
+
+export function getMarket(conditionId: string): BtMarket | null {
+  const row = getDb()
+    .prepare(
+      `SELECT condition_id, question, slug, end_date, volume, liquidity, neg_risk, closed, token_ids
+       FROM bt_markets WHERE condition_id = ?`,
+    )
+    .get(conditionId) as
+    | {
+        condition_id: string;
+        question: string;
+        slug: string;
+        end_date: string | null;
+        volume: number;
+        liquidity: number;
+        neg_risk: number;
+        closed: number;
+        token_ids: string;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    conditionId: row.condition_id,
+    question: row.question,
+    slug: row.slug,
+    endDate: row.end_date,
+    volume: row.volume,
+    liquidity: row.liquidity,
+    negRisk: row.neg_risk,
+    closed: row.closed,
+    tokenIds: row.token_ids,
+  };
+}
+
+export function conditionIdsMissingFromMarkets(): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT DISTINCT a.condition_id
+       FROM bt_trader_activity a
+       LEFT JOIN bt_markets m ON m.condition_id = a.condition_id
+       WHERE m.condition_id IS NULL`,
+    )
+    .all() as Array<{ condition_id: string }>;
+  return rows.map((r) => r.condition_id);
+}
+
+// ============================================================
+// bt_market_resolutions
+// ============================================================
+
+export function upsertResolution(r: BtMarketResolution): void {
+  getDb()
+    .prepare(
+      `INSERT INTO bt_market_resolutions (condition_id, winner_token_id)
+       VALUES (@conditionId, @winnerTokenId)
+       ON CONFLICT(condition_id) DO UPDATE SET
+         winner_token_id = excluded.winner_token_id,
+         resolved_at = CURRENT_TIMESTAMP`,
+    )
+    .run({ conditionId: r.conditionId, winnerTokenId: r.winnerTokenId });
+}
+
+export function getResolution(conditionId: string): BtMarketResolution | null {
+  const row = getDb()
+    .prepare(
+      `SELECT condition_id, winner_token_id, resolved_at
+       FROM bt_market_resolutions WHERE condition_id = ?`,
+    )
+    .get(conditionId) as
+    | { condition_id: string; winner_token_id: string | null; resolved_at: string }
+    | undefined;
+  if (!row) return null;
+  return {
+    conditionId: row.condition_id,
+    winnerTokenId: row.winner_token_id,
+    resolvedAt: row.resolved_at,
+  };
+}
+
+export function closedConditionIdsMissingResolution(): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT m.condition_id
+       FROM bt_markets m
+       LEFT JOIN bt_market_resolutions r ON r.condition_id = m.condition_id
+       WHERE m.closed = 1 AND r.condition_id IS NULL`,
+    )
+    .all() as Array<{ condition_id: string }>;
+  return rows.map((r) => r.condition_id);
+}
