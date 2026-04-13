@@ -74,6 +74,8 @@ export interface GammaMarket {
   closed: boolean;
   volume: number;
   liquidity: number;
+  /** ISO-8601 string, e.g. "2026-05-01T00:00:00Z". May be null/absent for open-ended markets. */
+  endDate?: string;
 }
 
 export interface GammaEvent {
@@ -357,4 +359,51 @@ export interface AnomalyAlert {
   severity: 'low' | 'medium' | 'high';
   message: string;
   timestamp: string;
+}
+
+// === Backtest / Collector Types ===
+
+export interface BtUniverseEntry {
+  address: string;
+  name: string;
+  volume12m: number;
+  addedAt: string;
+}
+
+export interface BtTradeActivity {
+  id: string;
+  address: string;
+  timestamp: number;
+  tokenId: string;
+  conditionId: string;
+  action: 'buy' | 'sell';
+  price: number;
+  size: number;
+  usdValue: number;
+  marketSlug: string;
+}
+
+export interface BtMarket {
+  conditionId: string;
+  question: string;
+  slug: string;
+  endDate: string | null;
+  volume: number;
+  liquidity: number;
+  negRisk: number;
+  closed: number;
+  tokenIds: string;  // JSON array of token_ids
+}
+
+export interface BtMarketResolution {
+  conditionId: string;
+  winnerTokenId: string | null;
+  resolvedAt: string;
+}
+
+export interface CollectHistoryOptions {
+  universeSize: number;        // default 300
+  historyDays: number;         // default 365
+  ratePauseMs: number;         // default 250
+  phases: Array<'universe' | 'activity' | 'markets' | 'resolutions'>;
 }
