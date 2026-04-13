@@ -132,6 +132,52 @@ const MIGRATIONS: string[] = [
     severity TEXT NOT NULL,
     message TEXT NOT NULL
   )`,
+
+  // bt_universe — Stage E: top-N traders by 12m volume (look-ahead-safe ranking)
+  `CREATE TABLE IF NOT EXISTS bt_universe (
+    address TEXT PRIMARY KEY,
+    name TEXT,
+    volume_12m REAL NOT NULL,
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  // bt_trader_activity — Stage E: full historical trade ledger per trader
+  `CREATE TABLE IF NOT EXISTS bt_trader_activity (
+    id TEXT PRIMARY KEY,
+    address TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    token_id TEXT NOT NULL,
+    condition_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    price REAL NOT NULL,
+    size REAL NOT NULL,
+    usd_value REAL NOT NULL,
+    market_slug TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS bt_trader_activity_addr_ts ON bt_trader_activity(address, timestamp)`,
+  `CREATE INDEX IF NOT EXISTS bt_trader_activity_token_ts ON bt_trader_activity(token_id, timestamp)`,
+  `CREATE INDEX IF NOT EXISTS bt_trader_activity_cond_ts ON bt_trader_activity(condition_id, timestamp)`,
+
+  // bt_markets — Stage E: cached Gamma metadata (endDate, liquidity, negRisk, closed flag)
+  `CREATE TABLE IF NOT EXISTS bt_markets (
+    condition_id TEXT PRIMARY KEY,
+    question TEXT,
+    slug TEXT,
+    end_date TEXT,
+    volume REAL,
+    liquidity REAL,
+    neg_risk INTEGER DEFAULT 0,
+    closed INTEGER DEFAULT 0,
+    token_ids TEXT,
+    fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  // bt_market_resolutions — Stage E: CLOB tokens[].winner for closed markets
+  `CREATE TABLE IF NOT EXISTS bt_market_resolutions (
+    condition_id TEXT PRIMARY KEY,
+    winner_token_id TEXT,
+    resolved_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 
 export function runMigrations(db: Database.Database): void {
