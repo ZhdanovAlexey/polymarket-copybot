@@ -32,16 +32,21 @@ export function getDb(): Database.Database {
  * - Opens the database file
  * - Runs all migrations
  */
-export function initDb(): void {
+export function initDb(path?: string): void {
   if (db) {
     log.warn('Database already initialized');
     return;
   }
 
-  mkdirSync(DATA_DIR, { recursive: true });
+  const dbPath = path ?? DB_PATH;
 
-  log.info({ path: DB_PATH }, 'Opening database');
-  db = new Database(DB_PATH);
+  // Only create the data directory for file-backed paths.
+  if (dbPath !== ':memory:') {
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  log.info({ path: dbPath }, 'Opening database');
+  db = new Database(dbPath);
 
   runMigrations(db);
 
