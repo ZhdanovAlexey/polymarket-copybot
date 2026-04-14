@@ -29,14 +29,14 @@ const configSchema = z.object({
   betScaleMinMul: z.coerce.number().default(1),
   pollIntervalMs: z.coerce.number().default(30000),
   leaderRefreshIntervalMs: z.coerce.number().default(3600000),
-  topTradersCount: z.coerce.number().default(10),
+  topTradersCount: z.coerce.number().default(5),
   leaderboardPeriod: z.string().default('WEEK'),
   redeemCheckIntervalMs: z.coerce.number().default(300000),
   maxSlippagePct: z.coerce.number().default(5),
   sellMode: z.string().default('mirror'),
   dryRun: z.coerce.boolean().default(true),
-  demoInitialBalanceUsd: z.coerce.number().default(1000),
-  demoCommissionPct: z.coerce.number().default(2),
+  demoInitialBalanceUsd: z.coerce.number().default(200),
+  demoCommissionPct: z.coerce.number().default(0.1),
 
   // Risk
   dailyLossLimitUsd: z.coerce.number().default(50),
