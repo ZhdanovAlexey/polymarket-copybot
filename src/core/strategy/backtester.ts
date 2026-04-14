@@ -112,8 +112,9 @@ export function runBacktest(
         const rawBet = computeConviction(trade, config.conviction, recentUsd, traderScore, consensusCount);
 
         // Equity-proportional: scale bet by current equity / initial capital.
-        // When equity drops, bets shrink automatically (Kelly-fraction behavior).
-        const equityScale = Math.max(0, equity / config.initialCapital);
+        // When equity drops, bets shrink (Kelly-fraction). Capped at 3× to prevent
+        // exponential compounding explosion on winning streaks.
+        const equityScale = Math.min(3, Math.max(0, equity / config.initialCapital));
         const betUsd = rawBet * equityScale;
 
         // Cost modeling
