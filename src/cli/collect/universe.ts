@@ -15,9 +15,9 @@ export interface UniverseOptions {
 }
 
 export async function collectUniverse(opts: UniverseOptions): Promise<void> {
-  log.info({ size: opts.size }, 'Fetching universe (top-N by volume, ALL_TIME)');
+  log.info({ size: opts.size }, 'Fetching universe (top-N by volume, all-time)');
 
-  const raw = await opts.fetchLeaderboard('ALL_TIME', 'volume', opts.size);
+  const raw = await opts.fetchLeaderboard('all', 'vol', opts.size);
   log.info({ received: raw.length }, 'Universe leaderboard response');
 
   const entries: BtUniverseEntry[] = raw.map((e) => ({

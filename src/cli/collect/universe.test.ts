@@ -36,5 +36,5 @@ test('collectUniverse: requests correct leaderboard params', async () => {
     return [];
   };
   await collectUniverse({ fetchLeaderboard: stubLeaderboard, size: 300 });
-  assert.deepEqual(capturedArgs, ['ALL_TIME', 'volume', 300]);
+  assert.deepEqual(capturedArgs, ['all', 'vol', 300]);
 });
