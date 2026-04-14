@@ -10,20 +10,16 @@ interface TraderSnapshot {
 }
 
 /**
- * Score a single trader using data in window [T - windowSeconds, T).
+ * Score a single trader using data in window [T - windowDays*86400, T).
  * Win rate uses ground-truth resolutions (not heuristic price > 0.5).
- *
- * @param windowSeconds  Duration of the lookback window in the same units as
- *                       BtTradeActivity.timestamp (Unix seconds). Pass
- *                       `days * 86400` from the caller.
  */
 export function scoreTraderAtTime(
   address: string,
   ds: BtDataset,
   T: number,
-  windowSeconds: number,
+  windowDays: number,
 ): TraderSnapshot {
-  const windowStart = T - windowSeconds;
+  const windowStart = T - windowDays * 86400;
 
   const windowTrades = ds.trades.filter(
     (t) => t.address === address && t.timestamp >= windowStart && t.timestamp < T,
@@ -67,12 +63,12 @@ export function scoreTraderAtTime(
 export function pickTopN(
   ds: BtDataset,
   T: number,
-  windowSeconds: number,
+  windowDays: number,
   topN: number,
 ): TraderSnapshot[] {
   const snapshots = ds.universe
-    .map((addr) => scoreTraderAtTime(addr, ds, T, windowSeconds))
-    .filter((s) => s.tradesCount > 0);
+    .map((addr) => scoreTraderAtTime(addr, ds, T, windowDays))
+    .filter((s) => s.tradesCount >= 3);
 
   snapshots.sort((a, b) => b.score - a.score);
   return snapshots.slice(0, topN);
