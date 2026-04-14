@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "test": "tsx --test 'src/**/*.test.ts'",
     "collect-history": "tsx src/cli/collect-history.ts",
-    "grid-search": "tsx src/cli/grid-search.ts"
+    "grid-search": "tsx src/cli/grid-search.ts",
+    "walk-forward": "tsx src/cli/walk-forward.ts"
   },
   "keywords": [],
   "author": "",
