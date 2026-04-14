@@ -51,6 +51,12 @@ const MIGRATIONS: string[] = [
     FOREIGN KEY (trader_address) REFERENCES tracked_traders(address)
   )`,
 
+  // trades indexes for fast per-trader and per-token lookups
+  `CREATE INDEX IF NOT EXISTS trades_trader_ts ON trades(trader_address, timestamp DESC)`,
+  `CREATE INDEX IF NOT EXISTS trades_token_side ON trades(token_id, side)`,
+  `CREATE INDEX IF NOT EXISTS trades_status ON trades(status)`,
+  `CREATE INDEX IF NOT EXISTS trades_timestamp ON trades(timestamp DESC)`,
+
   // positions
   `CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

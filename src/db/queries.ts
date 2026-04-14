@@ -241,10 +241,14 @@ export function getTrades(options?: {
   return rows.map(mapTradeRow);
 }
 
-export function getTradesByTrader(traderAddress: string, limit = 50): TradeResult[] {
-  const rows = getDb()
-    .prepare('SELECT * FROM trades WHERE trader_address = ? ORDER BY timestamp DESC LIMIT ?')
-    .all(traderAddress, limit) as Array<Record<string, unknown>>;
+export function getTradesByTrader(traderAddress: string, limit = 50, excludeSkipped = false): TradeResult[] {
+  const sql = excludeSkipped
+    ? 'SELECT * FROM trades WHERE trader_address = ? AND status != ? ORDER BY timestamp DESC LIMIT ?'
+    : 'SELECT * FROM trades WHERE trader_address = ? ORDER BY timestamp DESC LIMIT ?';
+  const params = excludeSkipped
+    ? [traderAddress, 'skipped', limit]
+    : [traderAddress, limit];
+  const rows = getDb().prepare(sql).all(...params) as Array<Record<string, unknown>>;
   return rows.map(mapTradeRow);
 }
 

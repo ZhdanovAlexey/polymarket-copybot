@@ -57,15 +57,36 @@ export function runBacktest(
     else consensusIndex.set(key, new Set([t.address]));
   }
 
+  // Monthly stop-loss state
+  const MONTH_SECONDS = 30 * DAY_SECONDS;
+  let monthStartEquity = config.initialCapital;
+  let currentMonthStart = alignedStart;
+  let monthStopped = false;
+
   // Day-by-day simulation
   for (let dayTs = alignedStart; dayTs < alignedEnd; dayTs += DAY_SECONDS) {
+    // Monthly stop-loss: reset at month boundaries, check drawdown
+    if (dayTs - currentMonthStart >= MONTH_SECONDS) {
+      currentMonthStart = dayTs;
+      monthStartEquity = equity;
+      monthStopped = false;
+    }
+    if (!monthStopped && monthStartEquity > 0) {
+      const monthDd = (monthStartEquity - equity) / monthStartEquity;
+      if (monthDd > 0.20) monthStopped = true; // 20% monthly DD → stop trading this month
+    }
+    if (monthStopped) {
+      // Skip to mark-to-market (still settle resolved positions)
+      // Jump to section 3 below
+    }
+
     // 1. Rebuild leaderboard for this day.
-    // Use end-of-day (dayTs + DAY_SECONDS) as T so today's trades count for today's leaderboard.
     const topTraders = pickTopN(ds, dayTs + DAY_SECONDS, config.leaderboardWindowDays, config.topN, 1);
     const activeSet = new Set(topTraders.map((t) => t.address));
     const traderScoreMap = new Map(topTraders.map((t) => [t.address, t.score]));
 
-    // 2. Process today's trades
+    // 2. Process today's trades (skip if month-stopped)
+    if (!monthStopped) {
     const todayTrades = tradesByDay.get(dayTs) ?? [];
     for (const trade of todayTrades) {
       if (!activeSet.has(trade.address)) continue;
@@ -74,7 +95,7 @@ export function runBacktest(
         // H7 gate: check time-to-resolution
         if (config.maxTtrDays !== Infinity) {
           const market = ds.markets.get(trade.conditionId);
-          if (!market?.endDate) continue; // skip unknown endDate
+          if (!market?.endDate) continue;
           const endDateTs = new Date(market.endDate).getTime() / 1000;
           const ttrDays = (endDateTs - trade.timestamp) / DAY_SECONDS;
           if (ttrDays > config.maxTtrDays) continue;
@@ -83,16 +104,21 @@ export function runBacktest(
         // Max positions gate
         if (positions.size >= config.maxPositions) continue;
 
-        // Conviction sizing
+        // Conviction sizing with equity-proportional scaling
         const recentUsd = traderUsdHistory.get(trade.address) ?? [];
         const traderScore = traderScoreMap.get(trade.address) ?? 0;
         const consensusKey = `${trade.tokenId}_${dayTs}`;
-        const consensusCount = (consensusIndex.get(consensusKey)?.size ?? 1) - 1; // exclude self
-        const betUsd = computeConviction(trade, config.conviction, recentUsd, traderScore, consensusCount);
+        const consensusCount = (consensusIndex.get(consensusKey)?.size ?? 1) - 1;
+        const rawBet = computeConviction(trade, config.conviction, recentUsd, traderScore, consensusCount);
+
+        // Equity-proportional: scale bet by current equity / initial capital.
+        // When equity drops, bets shrink automatically (Kelly-fraction behavior).
+        const equityScale = Math.max(0, equity / config.initialCapital);
+        const betUsd = rawBet * equityScale;
 
         // Cost modeling
         const cost = Math.min(betUsd, equity);
-        if (cost <= 0) continue;
+        if (cost <= 0.5) continue; // min $0.50 trade
         const slippageAdj = 1 + config.slippagePct / 100;
         const effectivePrice = trade.price * slippageAdj;
         const shares = cost / effectivePrice;
@@ -137,8 +163,9 @@ export function runBacktest(
         tradeCount++;
       }
     }
+    } // end if (!monthStopped)
 
-    // 3. Mark-to-market: close resolved positions
+    // 3. Mark-to-market: close resolved positions (always runs, even when stopped)
     for (const [tokenId, pos] of positions) {
       const winner = ds.resolutions.get(pos.conditionId);
       if (winner === undefined) continue; // not resolved yet

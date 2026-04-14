@@ -107,8 +107,7 @@ apiRouter.post('/traders/:address/pause', (req, res) => {
 // GET /api/traders/:address/trades — recent trades for a specific trader (non-skipped only)
 apiRouter.get('/traders/:address/trades', (req, res) => {
   try {
-    const trades = queries.getTradesByTrader(req.params.address, 30)
-      .filter((t) => t.status !== 'skipped');
+    const trades = queries.getTradesByTrader(req.params.address, 20, true);
     res.json(trades);
   } catch (err) {
     log.error({ err }, 'Failed to get trader trades');
