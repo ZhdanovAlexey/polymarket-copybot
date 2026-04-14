@@ -66,8 +66,14 @@ async function collectOne(address: string, opts: ActivityOptions): Promise<void>
       if (a.type !== 'TRADE') continue;
       const action = a.action?.toLowerCase();
       if (action !== 'buy' && action !== 'sell') continue;
+      // Polymarket activity API does not return an `id` field — derive a
+      // deterministic one from tx hash + condition so INSERT OR IGNORE dedupes
+      // correctly across re-runs.
+      const derivedId = a.id
+        || (a.transaction_hash ? `${a.transaction_hash}_${a.condition_id}` : '')
+        || `${address}_${a.timestamp}_${a.token_id}`;
       rows.push({
-        id: a.id,
+        id: derivedId,
         address,
         timestamp: a.timestamp,
         tokenId: a.token_id,
