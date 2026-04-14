@@ -47,9 +47,12 @@ export function initTraders() {
       return;
     }
 
-    // Expand row detail (skip if clicked on link or button)
+    // Expand row detail (skip only action buttons)
     const row = e.target.closest('tr[data-address]');
-    if (row && !e.target.closest('a, button')) {
+    if (row && !e.target.closest('.trader-pause-btn, .trader-remove-btn')) {
+      // Prevent navigation if clicked on the trader name link
+      const link = e.target.closest('a.trader-name-cell');
+      if (link) e.preventDefault();
       toggleDetail(row);
     }
   });
@@ -181,7 +184,8 @@ function renderRow(t) {
   return `
     <tr data-address="${escapeAttr(t.address)}" style="cursor:pointer;" title="Click to expand trades">
       <td>
-        <a href="${profileUrl}" target="_blank" rel="noopener noreferrer" class="trader-name-cell" title="${escapeAttr(t.name || t.address || '')}">${escapeHtml(displayName)}</a>
+        <span class="trader-name-cell" title="${escapeAttr(t.name || t.address || '')}">${escapeHtml(displayName)}</span>
+        <a href="${profileUrl}" target="_blank" rel="noopener noreferrer" class="trader-profile-link" title="Open on Polymarket" onclick="event.stopPropagation();">\u2197</a>
         <span class="text-muted" style="font-size:0.7rem;display:block;">${shortAddr}</span>
       </td>
       <td><span class="trader-badge ${statusClass}">${status}</span></td>

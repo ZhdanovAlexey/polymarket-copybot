@@ -509,6 +509,17 @@ a:hover {
   font-weight: 600;
 }
 
+.trader-profile-link {
+  font-size: 0.72rem;
+  opacity: 0.5;
+  margin-left: 4px;
+  text-decoration: none;
+}
+
+.trader-profile-link:hover {
+  opacity: 1;
+}
+
 .trader-link {
   display: inline-flex;
   align-items: center;

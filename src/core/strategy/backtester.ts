@@ -18,10 +18,14 @@ export function runBacktest(
   startTs: number,
   endTs: number,
 ): BacktestSimResult {
+  // Align to day boundaries so tradesByDay index keys always match loop iterations.
+  const alignedStart = Math.floor(startTs / DAY_SECONDS) * DAY_SECONDS;
+  const alignedEnd = Math.ceil(endTs / DAY_SECONDS) * DAY_SECONDS;
+
   let equity = config.initialCapital;
   let maxEquity = equity;
   let maxDrawdown = 0;
-  const equityCurve: DailyEquityPoint[] = [{ dayTs: startTs, equity }];
+  const equityCurve: DailyEquityPoint[] = [{ dayTs: alignedStart, equity }];
   const positions = new Map<string, SimPosition>();
   let tradeCount = 0;
   let closedWins = 0;
@@ -31,7 +35,7 @@ export function runBacktest(
   // Pre-index trades by day for fast lookup
   const tradesByDay = new Map<number, BtTradeActivity[]>();
   for (const t of ds.trades) {
-    if (t.timestamp < startTs || t.timestamp >= endTs) continue;
+    if (t.timestamp < alignedStart || t.timestamp >= alignedEnd) continue;
     const dayStart = Math.floor(t.timestamp / DAY_SECONDS) * DAY_SECONDS;
     const arr = tradesByDay.get(dayStart);
     if (arr) arr.push(t);
@@ -45,7 +49,7 @@ export function runBacktest(
   // Pre-build consensus index: for each (tokenId, day) → set of addresses
   const consensusIndex = new Map<string, Set<string>>();
   for (const t of ds.trades) {
-    if (t.action !== 'buy' || t.timestamp < startTs || t.timestamp >= endTs) continue;
+    if (t.action !== 'buy' || t.timestamp < alignedStart || t.timestamp >= alignedEnd) continue;
     const dayStart = Math.floor(t.timestamp / DAY_SECONDS) * DAY_SECONDS;
     const key = `${t.tokenId}_${dayStart}`;
     const set = consensusIndex.get(key);
@@ -54,7 +58,7 @@ export function runBacktest(
   }
 
   // Day-by-day simulation
-  for (let dayTs = startTs; dayTs < endTs; dayTs += DAY_SECONDS) {
+  for (let dayTs = alignedStart; dayTs < alignedEnd; dayTs += DAY_SECONDS) {
     // 1. Rebuild leaderboard for this day.
     // Use end-of-day (dayTs + DAY_SECONDS) as T so today's trades count for today's leaderboard.
     const topTraders = pickTopN(ds, dayTs + DAY_SECONDS, config.leaderboardWindowDays, config.topN, 1);
