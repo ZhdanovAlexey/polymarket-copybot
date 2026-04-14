@@ -402,8 +402,9 @@ export interface BtMarketResolution {
 }
 
 export interface CollectHistoryOptions {
-  universeSize: number;        // default 300
-  historyDays: number;         // default 365
-  ratePauseMs: number;         // default 250
+  universeSize: number;           // default 300
+  historyDays: number;            // default 365
+  ratePauseMs: number;            // default 250
+  maxTradesPerTrader: number;     // default 10000 (0 = unlimited)
   phases: Array<'universe' | 'activity' | 'markets' | 'resolutions'>;
 }

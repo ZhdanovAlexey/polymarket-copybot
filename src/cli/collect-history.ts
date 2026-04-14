@@ -18,12 +18,14 @@ export function parseArgs(argv: string[]): CollectHistoryOptions {
   let size = 300;
   let days = 365;
   let rate = 250;
+  let maxTrades = 10000;
   let phases: Phase[] = [...VALID_PHASES];
 
   for (const a of argv) {
     if (a.startsWith('--size=')) size = Number(a.slice(7));
     else if (a.startsWith('--days=')) days = Number(a.slice(7));
     else if (a.startsWith('--rate=')) rate = Number(a.slice(7));
+    else if (a.startsWith('--max-trades=')) maxTrades = Number(a.slice(13));
     else if (a.startsWith('--phase=')) {
       const requested = a.slice(8).split(',').map((s) => s.trim());
       for (const p of requested) {
@@ -35,7 +37,7 @@ export function parseArgs(argv: string[]): CollectHistoryOptions {
     }
   }
 
-  return { universeSize: size, historyDays: days, ratePauseMs: rate, phases };
+  return { universeSize: size, historyDays: days, ratePauseMs: rate, maxTradesPerTrader: maxTrades, phases };
 }
 
 export async function runCollectHistory(opts: CollectHistoryOptions): Promise<void> {
@@ -61,6 +63,7 @@ export async function runCollectHistory(opts: CollectHistoryOptions): Promise<vo
       historyStartTs,
       pageLimit: 500,
       ratePauseMs: opts.ratePauseMs,
+      maxTradesPerTrader: opts.maxTradesPerTrader,
     });
   }
 

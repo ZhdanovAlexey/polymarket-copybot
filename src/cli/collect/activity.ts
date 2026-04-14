@@ -4,6 +4,7 @@ import {
   listUniverse,
   bulkInsertActivity,
   maxActivityTimestamp,
+  countActivityForAddress,
 } from '../../db/bt-queries.js';
 import { Progress } from './progress.js';
 import type { ActivityEntry, BtTradeActivity } from '../../types.js';
@@ -23,9 +24,10 @@ type FetchActivityFn = (
 
 export interface ActivityOptions {
   fetchActivity: FetchActivityFn;
-  historyStartTs: number;  // earliest timestamp to fetch if no resume row exists
-  pageLimit: number;       // e.g. 500
-  ratePauseMs: number;     // delay between API calls
+  historyStartTs: number;       // earliest timestamp to fetch if no resume row exists
+  pageLimit: number;            // e.g. 500
+  ratePauseMs: number;          // delay between API calls
+  maxTradesPerTrader: number;   // 0 = unlimited; skip trader after this many rows collected
 }
 
 export async function collectActivity(opts: ActivityOptions): Promise<void> {
@@ -44,8 +46,16 @@ export async function collectActivity(opts: ActivityOptions): Promise<void> {
 }
 
 async function collectOne(address: string, opts: ActivityOptions): Promise<void> {
+  // Check per-trader cap (including previously collected rows from resume)
+  const existingCount = countActivityForAddress(address);
+  if (opts.maxTradesPerTrader > 0 && existingCount >= opts.maxTradesPerTrader) {
+    log.info({ address, existingCount, cap: opts.maxTradesPerTrader }, 'Skipping trader — already at cap');
+    return;
+  }
+
   const resumeFrom = maxActivityTimestamp(address);
   let start = resumeFrom !== null ? resumeFrom + 1 : opts.historyStartTs;
+  let totalCollected = existingCount;
 
   while (true) {
     const page = await opts.fetchActivity(address, {
@@ -88,7 +98,14 @@ async function collectOne(address: string, opts: ActivityOptions): Promise<void>
     }
 
     if (rows.length > 0) bulkInsertActivity(rows);
-    log.debug({ address, pageSize: page.length, inserted: rows.length, start }, 'Activity page processed');
+    totalCollected += rows.length;
+    log.debug({ address, pageSize: page.length, inserted: rows.length, totalCollected, start }, 'Activity page processed');
+
+    // Per-trader cap reached — stop collecting for this trader.
+    if (opts.maxTradesPerTrader > 0 && totalCollected >= opts.maxTradesPerTrader) {
+      log.info({ address, totalCollected, cap: opts.maxTradesPerTrader }, 'Trader cap reached');
+      break;
+    }
 
     // If page was not full, we've reached the end.
     if (page.length < opts.pageLimit) break;

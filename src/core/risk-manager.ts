@@ -40,22 +40,16 @@ export class RiskManager {
   }
 
   /**
-   * Check daily P&L limit
+   * Check daily P&L limit based on realized PnL from positions closed today.
+   * Only counts actual losses from sold/redeemed positions — open buys are not losses.
    */
   checkDailyLimit(): RiskCheckResult {
     if (config.dailyLossLimitUsd <= 0) return { allowed: true };
 
-    const todayTrades = queries.getTodayTrades();
-    const todayPnl = todayTrades
-      .filter(t => t.status === 'filled' || t.status === 'simulated')
-      .reduce((sum, t) => {
-        if (t.side === 'SELL') return sum + t.totalUsd;
-        if (t.side === 'BUY') return sum - t.totalUsd;
-        return sum;
-      }, 0);
+    const todayRealizedPnl = queries.getTodayRealizedPnl();
 
-    if (todayPnl < -config.dailyLossLimitUsd) {
-      return { allowed: false, reason: `Daily loss limit reached: ${todayPnl.toFixed(2)}` };
+    if (todayRealizedPnl < -config.dailyLossLimitUsd) {
+      return { allowed: false, reason: `Daily loss limit reached: ${todayRealizedPnl.toFixed(2)}` };
     }
     return { allowed: true };
   }

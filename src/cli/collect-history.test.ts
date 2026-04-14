@@ -7,7 +7,13 @@ test('parseArgs: defaults when no flags', () => {
   assert.equal(opts.universeSize, 300);
   assert.equal(opts.historyDays, 365);
   assert.equal(opts.ratePauseMs, 250);
+  assert.equal(opts.maxTradesPerTrader, 10000);
   assert.deepEqual(opts.phases, ['universe', 'activity', 'markets', 'resolutions']);
+});
+
+test('parseArgs: --max-trades overrides maxTradesPerTrader', () => {
+  const opts = parseArgs(['--max-trades=5000']);
+  assert.equal(opts.maxTradesPerTrader, 5000);
 });
 
 test('parseArgs: --size overrides universeSize', () => {

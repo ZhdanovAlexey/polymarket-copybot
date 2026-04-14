@@ -49,6 +49,7 @@ test('collectActivity: single page, inserts rows', async () => {
     historyStartTs: 0,
     pageLimit: 500,
     ratePauseMs: 0,
+    maxTradesPerTrader: 0,
   });
 
   assert.equal(countActivityForAddress('0xA'), 2);
@@ -81,6 +82,7 @@ test('collectActivity: paginates via seek when page is full', async () => {
     historyStartTs: 0,
     pageLimit: 5,
     ratePauseMs: 0,
+    maxTradesPerTrader: 0,
   });
 
   assert.equal(countActivityForAddress('0xA'), 6);
@@ -111,6 +113,7 @@ test('collectActivity: resume uses maxActivityTimestamp when row exists', async 
     historyStartTs: 0,
     pageLimit: 500,
     ratePauseMs: 0,
+    maxTradesPerTrader: 0,
   });
 
   assert.equal(seenStarts[0], 501);  // resume from 500 + 1
@@ -131,7 +134,34 @@ test('collectActivity: skips non-TRADE or non-buy/sell actions', async () => {
     historyStartTs: 0,
     pageLimit: 500,
     ratePauseMs: 0,
+    maxTradesPerTrader: 0,
   });
 
   assert.equal(countActivityForAddress('0xA'), 2);
+});
+
+test('collectActivity: per-trader cap stops collection early', async () => {
+  let fetchCount = 0;
+  const stub = async (address: string): Promise<ActivityEntry[]> => {
+    if (address !== '0xA') return [];
+    fetchCount++;
+    // Return 3 trades per page, unlimited pages
+    return [
+      makeActivity({ id: `p${fetchCount}_1`, timestamp: fetchCount * 100 + 1 }),
+      makeActivity({ id: `p${fetchCount}_2`, timestamp: fetchCount * 100 + 2 }),
+      makeActivity({ id: `p${fetchCount}_3`, timestamp: fetchCount * 100 + 3 }),
+    ];
+  };
+
+  await collectActivity({
+    fetchActivity: stub,
+    historyStartTs: 0,
+    pageLimit: 3,
+    ratePauseMs: 0,
+    maxTradesPerTrader: 5,
+  });
+
+  // Cap is 5, pages of 3 — should stop after 2 pages (6 rows >= 5 cap)
+  assert.ok(countActivityForAddress('0xA') <= 6, 'Should stop near cap');
+  assert.ok(countActivityForAddress('0xA') >= 3, 'Should collect at least one page');
 });

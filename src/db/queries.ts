@@ -248,6 +248,48 @@ export function getTodayTrades(): TradeResult[] {
   return rows.map(mapTradeRow);
 }
 
+export function getTradeCount(status?: string): number {
+  if (status) {
+    const row = getDb()
+      .prepare('SELECT COUNT(*) AS cnt FROM trades WHERE status = ?')
+      .get(status) as { cnt: number };
+    return row.cnt;
+  }
+  const row = getDb()
+    .prepare("SELECT COUNT(*) AS cnt FROM trades WHERE status IN ('filled','simulated','partial')")
+    .get() as { cnt: number };
+  return row.cnt;
+}
+
+export function getTotalCommission(): number {
+  const row = getDb()
+    .prepare("SELECT COALESCE(SUM(commission), 0) AS total FROM trades WHERE status IN ('filled','simulated')")
+    .get() as { total: number };
+  return row.total;
+}
+
+export function getTodayRealizedPnl(): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(
+        (SELECT COALESCE(SUM(t.total_usd), 0) FROM trades t
+          WHERE t.token_id = p.token_id AND t.side IN ('SELL','REDEEM')
+            AND t.status IN ('filled','simulated'))
+        - p.total_invested
+      ), 0) AS pnl
+      FROM positions p
+      WHERE p.status IN ('closed','redeemed')
+        AND EXISTS (
+          SELECT 1 FROM trades t
+          WHERE t.token_id = p.token_id
+            AND t.side IN ('SELL','REDEEM')
+            AND date(t.timestamp) = date('now')
+        )`,
+    )
+    .get() as { pnl: number };
+  return row.pnl;
+}
+
 function mapTradeRow(row: Record<string, unknown>): TradeResult {
   return {
     id: row.id as string,

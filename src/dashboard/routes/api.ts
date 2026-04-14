@@ -118,13 +118,11 @@ apiRouter.get('/trades', (req, res) => {
 // GET /api/metrics
 apiRouter.get('/metrics', (_req, res) => {
   try {
-    const allTrades = queries.getTrades({ limit: 10000 });
+    const totalTradeCount = queries.getTradeCount();
+    const failedTradeCount = queries.getTradeCount('failed');
     const todayTrades = queries.getTodayTrades();
     const positions = queries.getAllOpenPositions();
-
-    const isCompleted = (t: { status: string }) => t.status === 'filled' || t.status === 'simulated';
-
-    const completedTrades = allTrades.filter(isCompleted);
+    const totalCommission = queries.getTotalCommission();
 
     // Round-trip win rate: one "trade" = one closed/redeemed position.
     // Win iff received USD (sells + redeems) > invested USD. This beats a
@@ -139,9 +137,6 @@ apiRouter.get('/metrics', (_req, res) => {
     // Realized P&L across all closed round-trips (matches the Closed
     // Positions table total).
     const realizedPnl = closedRoundTrips.reduce((s, p) => s + p.realizedPnl, 0);
-
-    // Total commission paid
-    const totalCommission = completedTrades.reduce((sum, t) => sum + (t.commission ?? 0), 0);
 
     // In demo mode derive total P&L from balance delta - locked-in invested
     // (matches the pnl_snapshots series driving the chart)
@@ -168,8 +163,8 @@ apiRouter.get('/metrics', (_req, res) => {
       wins,
       losses,
       closedCount: totalClosedCount,
-      totalTrades: allTrades.length,
-      failedTrades: allTrades.filter((t) => t.status === 'failed').length,
+      totalTrades: totalTradeCount,
+      failedTrades: failedTradeCount,
       todayPnl,
       todayTrades: todayTrades.length,
       openPositions: positions.length,

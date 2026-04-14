@@ -57,7 +57,7 @@ test('end-to-end: 2 traders → 3 trades → 2 markets → 1 resolution', async 
   });
 
   await collectUniverse({ fetchLeaderboard: stubLb, size: 2 });
-  await collectActivity({ fetchActivity: stubActivity, historyStartTs: 0, pageLimit: 500, ratePauseMs: 0 });
+  await collectActivity({ fetchActivity: stubActivity, historyStartTs: 0, pageLimit: 500, ratePauseMs: 0, maxTradesPerTrader: 0 });
   await collectMarkets({ fetchMarket: stubGamma, ratePauseMs: 0 });
   await collectResolutions({ fetchResolution: stubClob, ratePauseMs: 0 });
 
