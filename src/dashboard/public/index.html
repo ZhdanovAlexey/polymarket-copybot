@@ -52,14 +52,31 @@
       </div>
     </section>
 
-    <!-- Tracked Traders -->
+    <!-- My Leaderboard (Tracked Traders Analytics) -->
     <section id="traders-section" class="card">
       <div class="card-header">
-        <h2>Tracked Traders <span id="traders-count" class="text-muted" style="font-weight:400;font-size:0.9rem;">(0/0)</span></h2>
+        <h2>My Leaderboard <span id="traders-count" class="text-muted" style="font-weight:400;font-size:0.9rem;">(0)</span></h2>
         <button id="btn-refresh-traders" class="btn btn-small" title="Refresh leaderboard now">&#x21bb; Refresh</button>
       </div>
-      <div id="traders-list">
-        <!-- Populated by traders.js -->
+      <div class="table-wrap">
+        <table id="traders-table" class="sortable">
+          <thead>
+            <tr>
+              <th data-sort="name">Trader</th>
+              <th data-sort="status">Status</th>
+              <th data-sort="copiedTrades">Copied</th>
+              <th data-sort="winRate">Win Rate</th>
+              <th data-sort="totalPnl">Realized P&amp;L</th>
+              <th data-sort="unrealizedPnl">Unrealized</th>
+              <th data-sort="openPositions">Open Pos</th>
+              <th data-sort="slippageAvg">Slippage</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="traders-body">
+            <!-- Populated by traders.js -->
+          </tbody>
+        </table>
       </div>
     </section>
 
@@ -140,6 +157,7 @@
         <table id="positions-table" class="sortable">
           <thead>
             <tr>
+              <th data-sort="openedAt">Opened</th>
               <th data-sort="traderName">Trader</th>
               <th data-sort="marketTitle">Market</th>
               <th data-sort="outcome">Outcome</th>

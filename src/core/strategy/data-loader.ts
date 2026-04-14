@@ -56,10 +56,18 @@ export function loadDataset(): BtDataset {
   const rawUni = db.prepare('SELECT address FROM bt_universe').all() as Array<{ address: string }>;
   const universe = rawUni.map((r) => r.address);
 
+  // Pre-index trades by address for O(1) lookup in scoreTraderAtTime
+  const tradesByAddress = new Map<string, BtTradeActivity[]>();
+  for (const t of trades) {
+    const arr = tradesByAddress.get(t.address);
+    if (arr) arr.push(t);
+    else tradesByAddress.set(t.address, [t]);
+  }
+
   log.info({
-    trades: trades.length, markets: markets.size,
-    resolutions: resolutions.size, universe: universe.length,
+    trades: trades.length, traderCount: tradesByAddress.size,
+    markets: markets.size, resolutions: resolutions.size, universe: universe.length,
   }, 'Dataset loaded into memory');
 
-  return { trades, markets, resolutions, universe };
+  return { trades, tradesByAddress, markets, resolutions, universe };
 }

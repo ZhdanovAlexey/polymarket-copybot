@@ -13,9 +13,19 @@ function makeTrade(overrides: Partial<BtTradeActivity>): BtTradeActivity {
   };
 }
 
+function buildTradesByAddress(trades: BtTradeActivity[]): Map<string, BtTradeActivity[]> {
+  const m = new Map<string, BtTradeActivity[]>();
+  for (const t of trades) {
+    const arr = m.get(t.address);
+    if (arr) arr.push(t); else m.set(t.address, [t]);
+  }
+  return m;
+}
+
 function makeDataset(trades: BtTradeActivity[]): BtDataset {
   return {
     trades,
+    tradesByAddress: buildTradesByAddress(trades),
     markets: new Map(),
     resolutions: new Map([['c1', 'tok1'], ['c2', null], ['c3', 'tok3']]),
     universe: [...new Set(trades.map((t) => t.address))],

@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import { runBacktest } from './backtester.js';
 import type { BtDataset, BtTradeActivity, BtMarket, BacktestSimConfig, ConvictionParams } from '../../types.js';
 
+function indexByAddr(trades: BtTradeActivity[]): Map<string, BtTradeActivity[]> {
+  const m = new Map<string, BtTradeActivity[]>();
+  for (const t of trades) { const a = m.get(t.address); if (a) a.push(t); else m.set(t.address, [t]); }
+  return m;
+}
+
 function makeTrade(overrides: Partial<BtTradeActivity>): BtTradeActivity {
   return {
     id: 'x', address: '0xA', timestamp: 100, tokenId: 'tok1', conditionId: 'c1',
@@ -26,7 +32,7 @@ test('backtester: single winning trade → positive PnL', () => {
       conditionId: 'c1', action: 'buy', price: 0.5, usdValue: 50 }),
   ];
   const ds: BtDataset = {
-    trades,
+    trades, tradesByAddress: indexByAddr(trades),
     markets: new Map([['c1', {
       conditionId: 'c1', question: '', slug: '', endDate: '2099-01-01',
       volume: 0, liquidity: 0, negRisk: 0, closed: 1, tokenIds: '["tok1"]',
@@ -48,7 +54,7 @@ test('backtester: losing trade → negative PnL', () => {
       conditionId: 'c1', action: 'buy', price: 0.5, usdValue: 50 }),
   ];
   const ds: BtDataset = {
-    trades,
+    trades, tradesByAddress: indexByAddr(trades),
     markets: new Map([['c1', {
       conditionId: 'c1', question: '', slug: '', endDate: '2099-01-01',
       volume: 0, liquidity: 0, negRisk: 0, closed: 1, tokenIds: '["tok1","tok2"]',
@@ -72,7 +78,7 @@ test('backtester: H7 filter skips trades on long-horizon markets', () => {
       conditionId: 'c1', action: 'buy', price: 0.5, usdValue: 50 }),
   ];
   const ds: BtDataset = {
-    trades,
+    trades, tradesByAddress: indexByAddr(trades),
     markets: new Map([['c1', {
       conditionId: 'c1', question: '', slug: '', endDate: farEndDate,
       volume: 0, liquidity: 0, negRisk: 0, closed: 1, tokenIds: '["tok1"]',
@@ -93,7 +99,7 @@ test('backtester: slippage + commission reduce PnL', () => {
       conditionId: 'c1', action: 'buy', price: 0.5, usdValue: 50 }),
   ];
   const ds: BtDataset = {
-    trades,
+    trades, tradesByAddress: indexByAddr(trades),
     markets: new Map([['c1', {
       conditionId: 'c1', question: '', slug: '', endDate: '2099-01-01',
       volume: 0, liquidity: 0, negRisk: 0, closed: 1, tokenIds: '["tok1"]',
@@ -116,7 +122,7 @@ test('backtester: slippage + commission reduce PnL', () => {
 test('backtester: returns equity curve with daily points', () => {
   const DAY = 86400;
   const result = runBacktest(
-    { trades: [], markets: new Map(), resolutions: new Map(), universe: ['0xA'] },
+    { trades: [], tradesByAddress: new Map(), markets: new Map(), resolutions: new Map(), universe: ['0xA'] },
     defaultConfig, DAY, DAY * 5,
   );
   assert.ok(result.equityCurve.length >= 2); // at least start + end

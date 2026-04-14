@@ -118,6 +118,13 @@ export function deactivateTrader(address: string): void {
   getDb().prepare('UPDATE tracked_traders SET active = 0 WHERE address = ?').run(address);
 }
 
+/** Reactivate a paused/exit-only trader — resume copying BUYs. */
+export function reactivateTrader(address: string): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET active = 1, exit_only = 0 WHERE address = ?')
+    .run(address);
+}
+
 /** Move to exit-only: stop copying BUYs but keep polling for SELL signals. */
 export function setExitOnly(address: string): void {
   getDb()
@@ -672,6 +679,108 @@ export function getAllPerformance(): TraderPerformance[] {
     slippageAvg: row.slippage_avg as number,
     lastUpdated: row.last_updated as string,
   }));
+}
+
+// ============================================================
+// Trader Analytics (My Leaderboard)
+// ============================================================
+
+export interface TraderAnalyticsRow {
+  address: string;
+  name: string;
+  active: boolean;
+  exitOnly: boolean;
+  probation: boolean;
+  score: number;
+  addedAt: string;
+  copiedTrades: number;
+  wins: number;
+  losses: number;
+  totalPnl: number;
+  avgReturn: number;
+  slippageAvg: number;
+  openPositions: number;
+  closedPositions: number;
+  openInvested: number;
+}
+
+export function getTraderAnalytics(): TraderAnalyticsRow[] {
+  // Step 1: base trader info + trade counts (fast, indexed)
+  const rows = getDb()
+    .prepare(
+      `SELECT
+        tt.address, tt.name, tt.active, tt.exit_only, tt.probation, tt.score, tt.added_at,
+        COALESCE(ts.copied_trades, 0) AS copied_trades,
+        COALESCE(ts.avg_slippage, 0) AS slippage_avg
+      FROM tracked_traders tt
+      LEFT JOIN (
+        SELECT trader_address,
+               COUNT(*) AS copied_trades,
+               AVG(CASE WHEN original_trader_price > 0
+                   THEN ABS(price - original_trader_price) / original_trader_price * 100
+                   ELSE NULL END) AS avg_slippage
+        FROM trades
+        WHERE status IN ('filled','simulated')
+        GROUP BY trader_address
+      ) ts ON ts.trader_address = tt.address
+      WHERE tt.active = 1 OR tt.exit_only = 1`,
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  // Step 2: enrich with closed position stats (already computed by getClosedPositions)
+  const closed = getClosedPositions(10000);
+  const traderClosedStats = new Map<string, { wins: number; losses: number; pnl: number; count: number }>();
+  for (const cp of closed) {
+    const addr = cp.traderAddress;
+    const entry = traderClosedStats.get(addr) ?? { wins: 0, losses: 0, pnl: 0, count: 0 };
+    if (cp.realizedPnl > 0) entry.wins++;
+    else entry.losses++;
+    entry.pnl += cp.realizedPnl;
+    entry.count++;
+    traderClosedStats.set(addr, entry);
+  }
+
+  // Step 3: open position counts per trader (from already-indexed countOpenPositionsFromTrader)
+  const result = rows.map((row) => {
+    const addr = row.address as string;
+    const cs = traderClosedStats.get(addr);
+    return {
+      address: addr,
+      name: row.name as string,
+      active: Boolean(row.active),
+      exitOnly: Boolean(row.exit_only),
+      probation: Boolean(row.probation),
+      score: (row.score as number) ?? 0,
+      addedAt: row.added_at as string,
+      copiedTrades: row.copied_trades as number,
+      wins: cs?.wins ?? 0,
+      losses: cs?.losses ?? 0,
+      totalPnl: cs?.pnl ?? 0,
+      avgReturn: 0,
+      slippageAvg: row.slippage_avg as number,
+      openPositions: countOpenPositionsFromTrader(addr),
+      closedPositions: cs?.count ?? 0,
+      openInvested: 0,
+    };
+  });
+
+  // Sort by realized PnL descending
+  result.sort((a, b) => b.totalPnl - a.totalPnl);
+  return result;
+}
+
+/**
+ * Get open position token IDs attributed to a specific trader.
+ */
+export function getOpenTokenIdsByTrader(traderAddress: string): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT DISTINCT p.token_id FROM positions p
+       JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY'
+       WHERE t.trader_address = ? AND p.status = 'open'`,
+    )
+    .all(traderAddress) as Array<{ token_id: string }>;
+  return rows.map((r) => r.token_id);
 }
 
 // ============================================================

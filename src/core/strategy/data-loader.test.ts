@@ -33,6 +33,9 @@ test('loadDataset: loads all tables into memory', () => {
   assert.equal(ds.markets.size, 1);
   assert.ok(ds.markets.has('c1'));
   assert.equal(ds.resolutions.get('c1'), 'tok1');
+  // tradesByAddress index
+  assert.equal(ds.tradesByAddress.size, 1); // 1 trader
+  assert.equal(ds.tradesByAddress.get('0xA')!.length, 2);
 });
 
 test('loadDataset: trades sorted by timestamp ASC', () => {

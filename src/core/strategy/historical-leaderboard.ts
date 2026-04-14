@@ -21,8 +21,10 @@ export function scoreTraderAtTime(
 ): TraderSnapshot {
   const windowStart = T - windowDays * 86400;
 
-  const windowTrades = ds.trades.filter(
-    (t) => t.address === address && t.timestamp >= windowStart && t.timestamp < T,
+  // Use pre-indexed trades by address (O(n) on trader's trades, not all 260k)
+  const traderTrades = ds.tradesByAddress?.get(address) ?? [];
+  const windowTrades = traderTrades.filter(
+    (t) => t.timestamp >= windowStart && t.timestamp < T,
   );
 
   if (windowTrades.length === 0) {

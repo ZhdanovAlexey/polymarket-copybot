@@ -197,7 +197,7 @@ function renderPositions(positions) {
   }
 
   if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No open positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No open positions</td></tr>';
     if (totalEl) totalEl.textContent = '--';
     return;
   }
@@ -213,6 +213,7 @@ function renderPositions(positions) {
 
       return `
         <tr data-token-id="${escapeHtml(p.tokenId)}">
+          <td title="${escapeHtml(p.openedAt || '')}">${p.openedAt ? relativeTime(p.openedAt) : '--'}</td>
           <td title="${escapeHtml(p.traderAddress || '')}">${escapeHtml(truncate(traderLabel, 14))}</td>
           <td title="${escapeHtml(p.marketTitle)}">${marketLink(p.marketSlug, p.marketTitle, 45)}</td>
           <td>${escapeHtml(p.outcome || '--')}</td>

@@ -62,6 +62,60 @@ apiRouter.get('/traders', (_req, res) => {
   }
 });
 
+// GET /api/traders/analytics — per-trader stats for "My Leaderboard"
+// Fast: DB-only, no live price fetching (unrealized PnL computed on frontend
+// using already-loaded position data from /api/positions).
+apiRouter.get('/traders/analytics', (_req, res) => {
+  try {
+    const rows = queries.getTraderAnalytics();
+    const enriched = rows.map((row) => {
+      const total = row.wins + row.losses;
+      return {
+        ...row,
+        winRate: total > 0 ? row.wins / total : 0,
+      };
+    });
+    res.json(enriched);
+  } catch (err) {
+    log.error({ err }, 'Failed to get trader analytics');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/traders/:address/pause — pause (exit-only) or resume a trader
+apiRouter.post('/traders/:address/pause', (req, res) => {
+  try {
+    const address = req.params.address;
+    const trader = queries.getTraderByAddress(address);
+    if (!trader) {
+      res.status(404).json({ error: 'Trader not found' });
+      return;
+    }
+    if (trader.active) {
+      queries.setExitOnly(address);
+      res.json({ status: 'paused' });
+    } else {
+      queries.reactivateTrader(address);
+      res.json({ status: 'active' });
+    }
+  } catch (err) {
+    log.error({ err }, 'Failed to toggle trader pause');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/traders/:address/trades — recent trades for a specific trader (non-skipped only)
+apiRouter.get('/traders/:address/trades', (req, res) => {
+  try {
+    const trades = queries.getTradesByTrader(req.params.address, 30)
+      .filter((t) => t.status !== 'skipped');
+    res.json(trades);
+  } catch (err) {
+    log.error({ err }, 'Failed to get trader trades');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // DELETE /api/traders/:address — remove a trader manually.
 // If they have open positions opened via their BUYs, move to exit-only
 // (keep polling for SELL signals). Otherwise fully deactivate.

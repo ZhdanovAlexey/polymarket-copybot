@@ -485,6 +485,8 @@ export interface WalkForwardResult {
 export interface BtDataset {
   /** All trades sorted by timestamp ASC. */
   trades: BtTradeActivity[];
+  /** Trades indexed by address for O(1) trader lookup. */
+  tradesByAddress: Map<string, BtTradeActivity[]>;
   /** Map conditionId → BtMarket */
   markets: Map<string, BtMarket>;
   /** Map conditionId → winnerTokenId (null if no winner) */
