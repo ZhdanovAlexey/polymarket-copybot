@@ -21,6 +21,7 @@ const CONVICTION_PARAMS: ConvictionParams = {
 const MAX_TTR_DAYS = 7;              // H7: only markets resolving within 7 days
 const EQUITY_SCALE_CAP = 3;          // max equity multiplier
 const MONTHLY_STOP_DD_PCT = 0.20;    // pause trading if month DD > 20%
+const MAX_POSITIONS_PER_TRADER = 4;  // max open positions per trader (5 traders × 4 = 20 global cap)
 
 const log = createLogger('executor');
 
@@ -261,7 +262,16 @@ export class Executor {
     }
 
     try {
-      // 2. H7 filter: skip markets with TTR > 7 days
+      // 2. Per-trader position limit
+      const traderOpenCount = queries.countOpenPositionsFromTrader(trade.traderAddress);
+      if (traderOpenCount >= MAX_POSITIONS_PER_TRADER) {
+        log.debug({ trader: trade.traderName, open: traderOpenCount, max: MAX_POSITIONS_PER_TRADER },
+          'Per-trader position limit reached — skipping BUY');
+        return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0,
+          `Per-trader limit: ${traderOpenCount}/${MAX_POSITIONS_PER_TRADER} positions`);
+      }
+
+      // 3. H7 filter: skip markets with TTR > 7 days
       const h7 = await this.checkH7(trade);
       if (!h7.allowed) {
         log.debug({ reason: h7.reason, market: trade.marketTitle }, 'H7 filter: skipping');
