@@ -179,6 +179,34 @@ const MIGRATIONS: string[] = [
     winner_token_id TEXT,
     resolved_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`,
+
+  // bt_grid_runs — Stage B: grid search results
+  `CREATE TABLE IF NOT EXISTS bt_grid_runs (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    calmar REAL,
+    pnl REAL,
+    max_dd REAL,
+    sharpe REAL,
+    win_rate REAL,
+    trade_count INTEGER,
+    avg_ttr_days REAL,
+    ran_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS bt_grid_runs_run_id ON bt_grid_runs(run_id)`,
+  `CREATE INDEX IF NOT EXISTS bt_grid_runs_calmar ON bt_grid_runs(calmar DESC)`,
+
+  // bt_walkforward_runs — Stage B: walk-forward validation results
+  `CREATE TABLE IF NOT EXISTS bt_walkforward_runs (
+    id TEXT PRIMARY KEY,
+    params_json TEXT NOT NULL,
+    median_calmar REAL,
+    min_calmar REAL,
+    pct_positive_folds REAL,
+    folds_json TEXT,
+    ran_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 
 export function runMigrations(db: Database.Database): void {

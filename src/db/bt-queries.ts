@@ -4,6 +4,8 @@ import type {
   BtTradeActivity,
   BtMarket,
   BtMarketResolution,
+  GridRunResult,
+  WalkForwardResult,
 } from '../types.js';
 
 // ============================================================
@@ -189,4 +191,63 @@ export function closedConditionIdsMissingResolution(): string[] {
     )
     .all() as Array<{ condition_id: string }>;
   return rows.map((r) => r.condition_id);
+}
+
+// ============================================================
+// bt_grid_runs (Stage B)
+// ============================================================
+
+export function insertGridRun(r: GridRunResult): void {
+  getDb()
+    .prepare(
+      `INSERT OR REPLACE INTO bt_grid_runs
+       (id, run_id, params_json, calmar, pnl, max_dd, sharpe, win_rate, trade_count, avg_ttr_days)
+       VALUES (@id, @runId, @paramsJson, @calmar, @pnl, @maxDd, @sharpe, @winRate, @tradeCount, @avgTtrDays)`,
+    )
+    .run(r);
+}
+
+export function topGridRuns(limit: number, runId?: string): GridRunResult[] {
+  const sql = runId
+    ? 'SELECT * FROM bt_grid_runs WHERE run_id = ? ORDER BY calmar DESC LIMIT ?'
+    : 'SELECT * FROM bt_grid_runs ORDER BY calmar DESC LIMIT ?';
+  const args = runId ? [runId, limit] : [limit];
+  const rows = getDb().prepare(sql).all(...args) as Array<Record<string, unknown>>;
+  return rows.map(mapGridRun);
+}
+
+function mapGridRun(r: Record<string, unknown>): GridRunResult {
+  return {
+    id: String(r.id), runId: String(r.run_id), paramsJson: String(r.params_json),
+    calmar: Number(r.calmar), pnl: Number(r.pnl), maxDd: Number(r.max_dd),
+    sharpe: Number(r.sharpe), winRate: Number(r.win_rate),
+    tradeCount: Number(r.trade_count), avgTtrDays: Number(r.avg_ttr_days),
+    ranAt: String(r.ran_at),
+  };
+}
+
+// ============================================================
+// bt_walkforward_runs (Stage B)
+// ============================================================
+
+export function insertWalkForwardRun(r: WalkForwardResult): void {
+  getDb()
+    .prepare(
+      `INSERT OR REPLACE INTO bt_walkforward_runs
+       (id, params_json, median_calmar, min_calmar, pct_positive_folds, folds_json)
+       VALUES (@id, @paramsJson, @medianCalmar, @minCalmar, @pctPositiveFolds, @foldsJson)`,
+    )
+    .run(r);
+}
+
+export function topWalkForwardRuns(limit: number): WalkForwardResult[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM bt_walkforward_runs ORDER BY min_calmar DESC LIMIT ?')
+    .all(limit) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: String(r.id), paramsJson: String(r.params_json),
+    medianCalmar: Number(r.median_calmar), minCalmar: Number(r.min_calmar),
+    pctPositiveFolds: Number(r.pct_positive_folds), foldsJson: String(r.folds_json),
+    ranAt: String(r.ran_at),
+  }));
 }
