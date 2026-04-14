@@ -116,11 +116,11 @@ apiRouter.get('/trades', (req, res) => {
 });
 
 // GET /api/metrics
-apiRouter.get('/metrics', (_req, res) => {
+apiRouter.get('/metrics', async (_req, res) => {
   try {
     const totalTradeCount = queries.getTradeCount();
     const failedTradeCount = queries.getTradeCount('failed');
-    const todayTrades = queries.getTodayTrades();
+    const todayTradeCount = queries.getTodayTradeCount();
     const positions = queries.getAllOpenPositions();
     const totalCommission = queries.getTotalCommission();
 
@@ -138,15 +138,33 @@ apiRouter.get('/metrics', (_req, res) => {
     // Positions table total).
     const realizedPnl = closedRoundTrips.reduce((s, p) => s + p.realizedPnl, 0);
 
-    // In demo mode derive total P&L from balance delta - locked-in invested
-    // (matches the pnl_snapshots series driving the chart)
+    // Fetch current prices for open positions to compute unrealized P&L
+    let unrealizedPnl = 0;
     const lockedInOpen = positions.reduce((s, p) => s + (p.totalInvested ?? 0), 0);
+    if (positions.length > 0) {
+      try {
+        const { ClobClientWrapper } = await import('../../api/clob-client.js');
+        const clob = new ClobClientWrapper();
+        const tokenIds = positions.map((p) => p.tokenId);
+        const prices = await clob.getPrices(tokenIds);
+        for (const pos of positions) {
+          const currentPrice = prices.get(pos.tokenId);
+          if (currentPrice !== undefined) {
+            unrealizedPnl += (currentPrice - pos.avgPrice) * pos.totalShares;
+          }
+        }
+      } catch (err) {
+        log.warn({ err }, 'Failed to fetch live prices for unrealized PnL');
+      }
+    }
+
+    // In demo mode derive total P&L from balance delta + market value of open positions
     const demoInitial = parseFloat(
       queries.getSetting('demo_initial_balance') ?? String(config.demoInitialBalanceUsd),
     );
     const totalPnlDemo = config.dryRun
-      ? queries.getDemoBalance() - demoInitial + lockedInOpen
-      : realizedPnl - totalCommission;
+      ? queries.getDemoBalance() - demoInitial + lockedInOpen + unrealizedPnl
+      : realizedPnl - totalCommission + unrealizedPnl;
 
     // Today P&L = currentTotalPnl − firstSnapshot-of-today.totalPnl.
     // Matches the chart (snapshots use the same formula). If no snapshot
@@ -157,7 +175,7 @@ apiRouter.get('/metrics', (_req, res) => {
     const response: Record<string, unknown> = {
       totalPnl: totalPnlDemo,
       realizedPnl,
-      unrealizedPnl: 0,
+      unrealizedPnl,
       lockedInOpen,
       winRate: totalClosedCount > 0 ? wins / totalClosedCount : 0,
       wins,
@@ -166,7 +184,7 @@ apiRouter.get('/metrics', (_req, res) => {
       totalTrades: totalTradeCount,
       failedTrades: failedTradeCount,
       todayPnl,
-      todayTrades: todayTrades.length,
+      todayTrades: todayTradeCount,
       openPositions: positions.length,
     };
     if (config.dryRun) {

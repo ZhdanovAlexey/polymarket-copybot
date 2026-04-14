@@ -39,12 +39,19 @@ const METRIC_DEFS = [
     subFormat: (v) => `${v} trades today`,
   },
   {
+    id: 'unrealized-pnl',
+    label: 'Unrealized P&L',
+    format: formatUsd,
+    colorize: true,
+    subKey: 'openPositions',
+    subFormat: (v) => `${v} open position${v === 1 ? '' : 's'}`,
+  },
+  {
     id: 'locked-in',
     label: 'Locked in positions',
     format: formatUsdUnsigned,
     colorize: false,
-    subKey: 'openPositions',
-    subFormat: (v) => `${v} open position${v === 1 ? '' : 's'}`,
+    subKey: null,
   },
 ];
 
@@ -97,6 +104,7 @@ export function updateMetrics(data) {
     'win-rate': data.winRate,
     'total-trades': data.totalTrades,
     'today-pnl': data.todayPnl,
+    'unrealized-pnl': data.unrealizedPnl,
     'locked-in': data.lockedInOpen,
   };
 

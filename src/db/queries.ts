@@ -248,6 +248,13 @@ export function getTodayTrades(): TradeResult[] {
   return rows.map(mapTradeRow);
 }
 
+export function getTodayTradeCount(): number {
+  const row = getDb()
+    .prepare("SELECT COUNT(*) AS cnt FROM trades WHERE date(timestamp) = date('now') AND status IN ('filled','simulated','partial')")
+    .get() as { cnt: number };
+  return row.cnt;
+}
+
 export function getTradeCount(status?: string): number {
   if (status) {
     const row = getDb()

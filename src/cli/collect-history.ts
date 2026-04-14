@@ -68,15 +68,18 @@ export async function runCollectHistory(opts: CollectHistoryOptions): Promise<vo
   }
 
   if (opts.phases.includes('markets')) {
-    log.info('--- Phase 3: markets ---');
+    log.info('--- Phase 3: markets + resolutions (via CLOB) ---');
     await collectMarkets({
-      fetchMarket: gammaApi.getMarketByConditionId.bind(gammaApi),
+      fetchMarket: clob.getMarketFull.bind(clob),
       ratePauseMs: opts.ratePauseMs,
     });
   }
 
   if (opts.phases.includes('resolutions')) {
-    log.info('--- Phase 4: resolutions ---');
+    // Phase 4 is now a no-op for fresh runs (Phase 3 writes resolutions too).
+    // Kept for backward compat: picks up any closed markets whose resolution
+    // was missed (e.g., market closed AFTER Phase 3 ran).
+    log.info('--- Phase 4: resolutions (catch-up) ---');
     await collectResolutions({
       fetchResolution: clob.getMarketResolution.bind(clob),
       ratePauseMs: opts.ratePauseMs,

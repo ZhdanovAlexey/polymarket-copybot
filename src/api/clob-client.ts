@@ -200,6 +200,45 @@ export class ClobClientWrapper {
     };
   }
 
+  /**
+   * Return full market metadata from CLOB — suitable for bt_markets + bt_market_resolutions.
+   * Returns null on 404.
+   */
+  async getMarketFull(
+    conditionId: string,
+  ): Promise<{
+    condition_id: string;
+    question: string;
+    market_slug: string;
+    end_date_iso?: string;
+    closed: boolean;
+    neg_risk: boolean;
+    tokens: Array<{ token_id: string; outcome: string; winner: boolean }>;
+  } | null> {
+    const url = `${this.baseUrl}/markets/${encodeURIComponent(conditionId)}`;
+    const res = await fetchWithRetry(url);
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(`CLOB markets request failed: ${res.status} ${res.statusText}`);
+    }
+    const data = (await res.json()) as Record<string, unknown>;
+    return {
+      condition_id: String(data.condition_id ?? ''),
+      question: String(data.question ?? ''),
+      market_slug: String(data.market_slug ?? ''),
+      end_date_iso: data.end_date_iso ? String(data.end_date_iso) : undefined,
+      closed: Boolean(data.closed),
+      neg_risk: Boolean(data.neg_risk),
+      tokens: Array.isArray(data.tokens)
+        ? data.tokens.map((t: Record<string, unknown>) => ({
+            token_id: String(t.token_id ?? ''),
+            outcome: String(t.outcome ?? ''),
+            winner: Boolean(t.winner),
+          }))
+        : [],
+    };
+  }
+
   async getOrderBook(tokenId: string): Promise<OrderBookResponse> {
     const url = `${this.baseUrl}/book?token_id=${encodeURIComponent(tokenId)}`;
     log.debug({ tokenId, url }, 'fetching order book');
@@ -238,6 +277,25 @@ export class ClobClientWrapper {
       log.error({ err, tokenId }, 'failed to fetch price');
       throw err;
     }
+  }
+
+  async getPrices(tokenIds: string[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (tokenIds.length === 0) return result;
+
+    // Fetch in parallel, silently skip failures
+    const entries = await Promise.allSettled(
+      tokenIds.map(async (tokenId) => {
+        const price = await this.getMidpoint(tokenId);
+        return [tokenId, price] as const;
+      }),
+    );
+    for (const entry of entries) {
+      if (entry.status === 'fulfilled') {
+        result.set(entry.value[0], entry.value[1]);
+      }
+    }
+    return result;
   }
 
   // Helper: get best bid price from order book

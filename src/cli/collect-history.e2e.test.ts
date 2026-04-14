@@ -5,7 +5,8 @@ import { collectUniverse } from './collect/universe.js';
 import { collectActivity } from './collect/activity.js';
 import { collectMarkets } from './collect/markets.js';
 import { collectResolutions } from './collect/resolutions.js';
-import type { ActivityEntry, GammaMarket, LeaderboardEntry } from '../types.js';
+import type { ActivityEntry, LeaderboardEntry } from '../types.js';
+import type { ClobMarketRaw } from './collect/markets.js';
 
 beforeEach(() => initDb(':memory:'));
 afterEach(() => closeDb());
@@ -34,21 +35,24 @@ test('end-to-end: 2 traders → 3 trades → 2 markets → 1 resolution', async 
   const stubActivity = async (addr: string): Promise<ActivityEntry[]> =>
     activityMap[addr] ?? [];
 
-  const marketsMap: Record<string, GammaMarket> = {
+  const marketsMap: Record<string, ClobMarketRaw> = {
     c1: {
-      id: 'id1', question: 'Q1', slug: 'q1', conditionId: 'c1',
-      tokens: [{ token_id: 'tA1', outcome: 'Yes', price: 0.5 }],
-      orderPriceMinTickSize: 0.01, negRisk: false, active: false, closed: true,
-      volume: 100, liquidity: 50, endDate: '2026-03-01',
+      condition_id: 'c1', question: 'Q1', market_slug: 'q1',
+      end_date_iso: '2026-03-01T00:00:00Z', closed: true, neg_risk: false,
+      tokens: [
+        { token_id: 'tA1', outcome: 'Yes', winner: true },
+        { token_id: 'tB1', outcome: 'No', winner: false },
+      ],
     },
     c2: {
-      id: 'id2', question: 'Q2', slug: 'q2', conditionId: 'c2',
-      tokens: [{ token_id: 'tB1', outcome: 'Yes', price: 0.5 }],
-      orderPriceMinTickSize: 0.01, negRisk: false, active: true, closed: false,
-      volume: 200, liquidity: 75, endDate: '2027-01-01',
+      condition_id: 'c2', question: 'Q2', market_slug: 'q2',
+      end_date_iso: '2027-01-01T00:00:00Z', closed: false, neg_risk: false,
+      tokens: [
+        { token_id: 'tB1', outcome: 'Yes', winner: false },
+      ],
     },
   };
-  const stubGamma = async (cid: string): Promise<GammaMarket | null> =>
+  const stubMarkets = async (cid: string): Promise<ClobMarketRaw | null> =>
     marketsMap[cid] ?? null;
 
   const stubClob = async (cid: string) => ({
@@ -58,7 +62,7 @@ test('end-to-end: 2 traders → 3 trades → 2 markets → 1 resolution', async 
 
   await collectUniverse({ fetchLeaderboard: stubLb, size: 2 });
   await collectActivity({ fetchActivity: stubActivity, historyStartTs: 0, pageLimit: 500, ratePauseMs: 0, maxTradesPerTrader: 0 });
-  await collectMarkets({ fetchMarket: stubGamma, ratePauseMs: 0 });
+  await collectMarkets({ fetchMarket: stubMarkets, ratePauseMs: 0 });
   await collectResolutions({ fetchResolution: stubClob, ratePauseMs: 0 });
 
   // Sanity: counts
@@ -72,10 +76,14 @@ test('end-to-end: 2 traders → 3 trades → 2 markets → 1 resolution', async 
 
   // Sanity: end_date persisted and queryable
   const m1 = getDb().prepare('SELECT end_date, closed FROM bt_markets WHERE condition_id = ?').get('c1') as { end_date: string; closed: number };
-  assert.equal(m1.end_date, '2026-03-01');
+  assert.equal(m1.end_date, '2026-03-01T00:00:00Z');
   assert.equal(m1.closed, 1);
 
   // Sanity: the open market did not get a resolution row
   const r2 = getDb().prepare('SELECT * FROM bt_market_resolutions WHERE condition_id = ?').get('c2');
   assert.equal(r2, undefined);
+
+  // Sanity: resolution was written by Phase 3 (not Phase 4)
+  const r1 = getDb().prepare('SELECT winner_token_id FROM bt_market_resolutions WHERE condition_id = ?').get('c1') as { winner_token_id: string };
+  assert.equal(r1.winner_token_id, 'tA1');
 });
