@@ -408,3 +408,87 @@ export interface CollectHistoryOptions {
   maxTradesPerTrader: number;     // default 10000 (0 = unlimited)
   phases: Array<'universe' | 'activity' | 'markets' | 'resolutions'>;
 }
+
+// === Stage B: Grid Search + Backtest Types ===
+
+export interface ConvictionParams {
+  betBase: number;         // base bet in USD (e.g. $2)
+  f1Anchor: number;        // USD anchor for F1 normalization
+  f1Max: number;           // max F1 multiplier
+  w2: number;              // F2 z-score weight (0 = off)
+  w3: number;              // F3 trader-score weight (0 = off)
+  f4Boost: number;         // F4 consensus multiplier (1.0 = off)
+}
+
+export interface BacktestSimConfig {
+  conviction: ConvictionParams;
+  topN: number;                   // active traders per day
+  leaderboardWindowDays: number;  // scoring lookback
+  maxTtrDays: number;             // H7 filter (Infinity = off)
+  maxPositions: number;           // concurrent open positions
+  initialCapital: number;         // starting equity
+  slippagePct: number;            // fixed spread per trade (e.g. 1)
+  commissionPct: number;          // per-trade commission (e.g. 2)
+}
+
+export interface SimPosition {
+  tokenId: string;
+  conditionId: string;
+  shares: number;
+  avgPrice: number;
+  invested: number;
+  openedAtTs: number;
+}
+
+export interface DailyEquityPoint {
+  dayTs: number;    // start-of-day Unix timestamp
+  equity: number;
+}
+
+export interface BacktestSimResult {
+  config: BacktestSimConfig;
+  calmar: number;
+  totalPnl: number;
+  maxDrawdown: number;
+  sharpe: number;
+  winRate: number;
+  tradeCount: number;
+  avgTtrDays: number;
+  equityCurve: DailyEquityPoint[];
+}
+
+export interface GridRunResult {
+  id: string;
+  runId: string;
+  paramsJson: string;
+  calmar: number;
+  pnl: number;
+  maxDd: number;
+  sharpe: number;
+  winRate: number;
+  tradeCount: number;
+  avgTtrDays: number;
+  ranAt: string;
+}
+
+export interface WalkForwardResult {
+  id: string;
+  paramsJson: string;
+  medianCalmar: number;
+  minCalmar: number;
+  pctPositiveFolds: number;
+  foldsJson: string;
+  ranAt: string;
+}
+
+/** In-memory dataset loaded from bt_* tables for pure-function backtesting. */
+export interface BtDataset {
+  /** All trades sorted by timestamp ASC. */
+  trades: BtTradeActivity[];
+  /** Map conditionId → BtMarket */
+  markets: Map<string, BtMarket>;
+  /** Map conditionId → winnerTokenId (null if no winner) */
+  resolutions: Map<string, string | null>;
+  /** All addresses in the universe. */
+  universe: string[];
+}
