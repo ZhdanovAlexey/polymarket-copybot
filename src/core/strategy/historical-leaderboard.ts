@@ -58,17 +58,18 @@ export function scoreTraderAtTime(
 
 /**
  * Pick top-N traders by composite score at time T.
- * Traders with zero trades in the window are excluded.
+ * Traders with fewer than minTrades in the window are excluded (default 3).
  */
 export function pickTopN(
   ds: BtDataset,
   T: number,
   windowDays: number,
   topN: number,
+  minTrades = 3,
 ): TraderSnapshot[] {
   const snapshots = ds.universe
     .map((addr) => scoreTraderAtTime(addr, ds, T, windowDays))
-    .filter((s) => s.tradesCount >= 3);
+    .filter((s) => s.tradesCount >= minTrades);
 
   snapshots.sort((a, b) => b.score - a.score);
   return snapshots.slice(0, topN);
