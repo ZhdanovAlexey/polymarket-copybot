@@ -14,11 +14,11 @@ const AXES = {
 
 // Fixed params for all configs
 const FIXED = {
-  betBase: 2,
+  betBase: 1,             // $1 base bet (~0.5% of $200 deposit)
   maxPositions: 20,
-  initialCapital: 500,
+  initialCapital: 200,    // realistic micro-deposit starting point
   slippagePct: 1,
-  commissionPct: 0.1, // Polymarket CLOB: 0% fees, ~$0.01 gas on Polygon ≈ 0.1% on $10 bet
+  commissionPct: 0.1,     // Polymarket CLOB: 0% fees, ~$0.01 gas on Polygon
 };
 
 /**

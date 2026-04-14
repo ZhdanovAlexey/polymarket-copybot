@@ -487,6 +487,11 @@ a:hover {
   background: var(--bg-tertiary);
 }
 
+.detail-scroll-wrap {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
 .detail-subtable {
   border-collapse: collapse;
 }

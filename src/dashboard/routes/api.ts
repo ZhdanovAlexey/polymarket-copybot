@@ -104,13 +104,25 @@ apiRouter.post('/traders/:address/pause', (req, res) => {
   }
 });
 
-// GET /api/traders/:address/trades — recent trades for a specific trader (non-skipped only)
-apiRouter.get('/traders/:address/trades', (req, res) => {
+// GET /api/traders/:address/positions — open + closed positions attributed to this trader
+apiRouter.get('/traders/:address/positions', (req, res) => {
   try {
-    const trades = queries.getTradesByTrader(req.params.address, 20, true);
-    res.json(trades);
+    const address = req.params.address;
+
+    // Open positions for this trader
+    const openTokenIds = queries.getOpenTokenIdsByTrader(address);
+    const allOpen = queries.getAllOpenPositions();
+    const openPositions = allOpen
+      .filter((p) => openTokenIds.includes(p.tokenId))
+      .map((p) => ({ ...p, status: 'open' as const, realizedPnl: 0, closedAt: null }));
+
+    // Closed positions for this trader
+    const allClosed = queries.getClosedPositions(10000);
+    const closedPositions = allClosed.filter((p) => p.traderAddress === address);
+
+    res.json({ open: openPositions, closed: closedPositions });
   } catch (err) {
-    log.error({ err }, 'Failed to get trader trades');
+    log.error({ err }, 'Failed to get trader positions');
     res.status(500).json({ error: (err as Error).message });
   }
 });

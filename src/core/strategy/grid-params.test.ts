@@ -9,8 +9,8 @@ test('generateLHS: produces N distinct configs', () => {
   // All should have valid topN values
   for (const c of configs) {
     assert.ok([5, 10, 20].includes(c.topN));
-    assert.ok(c.conviction.betBase === 2);
-    assert.ok(c.initialCapital === 500);
+    assert.ok(c.conviction.betBase === 1);
+    assert.ok(c.initialCapital === 200);
   }
 });
 

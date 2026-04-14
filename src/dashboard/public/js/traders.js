@@ -12,6 +12,7 @@ const TRASH_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" heigh
 
 let lastAnalytics = [];
 let sortState = { key: 'totalPnl', dir: 'desc' };
+let expandedAddress = null;
 
 /* ---- Init ---- */
 
@@ -159,6 +160,12 @@ function renderTable(traders) {
   }
 
   tbody.innerHTML = sorted.map(renderRow).join('');
+
+  // Re-expand previously open detail row
+  if (expandedAddress) {
+    const row = tbody.querySelector(`tr[data-address="${CSS.escape(expandedAddress)}"]`);
+    if (row) toggleDetail(row, true);
+  }
 }
 
 const PAUSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>`;
@@ -217,16 +224,19 @@ function statusLabel(t) {
 
 /* ---- Expandable detail row ---- */
 
-async function toggleDetail(row) {
+async function toggleDetail(row, force) {
   const address = row.dataset.address;
   const existingDetail = row.nextElementSibling;
   if (existingDetail?.classList.contains('trader-detail-row')) {
+    if (force) return; // Already open, keep it
     existingDetail.remove();
+    expandedAddress = null;
     return;
   }
 
   // Remove any other open detail rows
   for (const el of document.querySelectorAll('.trader-detail-row')) el.remove();
+  expandedAddress = address;
 
   const colSpan = row.children.length;
   const detailRow = document.createElement('tr');
@@ -235,32 +245,43 @@ async function toggleDetail(row) {
   row.after(detailRow);
 
   try {
-    const trades = await fetch(`/api/traders/${encodeURIComponent(address)}/trades`).then((r) => r.json());
-    if (!Array.isArray(trades) || trades.length === 0) {
-      detailRow.innerHTML = `<td colspan="${colSpan}" style="padding:0.5rem 1rem;"><em class="text-muted">No trades found for this trader</em></td>`;
+    const data = await fetch(`/api/traders/${encodeURIComponent(address)}/positions`).then((r) => r.json());
+    const positions = [...(data.open || []), ...(data.closed || [])];
+
+    if (positions.length === 0) {
+      detailRow.innerHTML = `<td colspan="${colSpan}" style="padding:0.5rem 1rem;"><em class="text-muted">No positions found for this trader</em></td>`;
       return;
     }
 
-    const rows = trades.map((t) => {
-      const sideClass = t.side === 'BUY' ? 'text-green' : t.side === 'SELL' ? 'text-red' : '';
-      const statusCls = t.status === 'skipped' ? 'text-muted' : '';
+    const rows = positions.map((p) => {
+      const isOpen = p.status === 'open';
+      const pnl = p.realizedPnl || 0;
+      const pnlClass = isOpen ? '' : (pnl >= 0 ? 'pnl-positive' : 'pnl-negative');
+      const pnlStr = isOpen ? '--' : `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`;
+      const statusClass = isOpen ? 'text-green' : (p.status === 'redeemed' ? 'text-muted' : '');
+      const statusLabel = isOpen ? 'Open' : p.status === 'redeemed' ? 'Redeemed' : 'Closed';
+      const time = p.closedAt ? relativeTime(p.closedAt) : relativeTime(p.openedAt);
+
       return `<tr>
-        <td>${relativeTime(t.timestamp)}</td>
-        <td title="${escapeHtml(t.marketTitle || '')}">${escapeHtml(truncate(t.marketTitle || '--', 35))}</td>
-        <td>${escapeHtml(t.outcome || '--')}</td>
-        <td class="${sideClass}">${t.side}</td>
-        <td>$${Number(t.totalUsd || 0).toFixed(2)}</td>
-        <td class="${statusCls}">${t.status}</td>
+        <td>${time}</td>
+        <td title="${escapeHtml(p.marketTitle || '')}">${escapeHtml(truncate(p.marketTitle || '--', 40))}</td>
+        <td>${escapeHtml(p.outcome || '--')}</td>
+        <td>$${Number(p.totalInvested || 0).toFixed(2)}</td>
+        <td>${Number(p.totalShares || 0).toFixed(2)}</td>
+        <td class="${statusClass}">${statusLabel}</td>
+        <td class="${pnlClass}">${pnlStr}</td>
       </tr>`;
     }).join('');
 
     detailRow.innerHTML = `<td colspan="${colSpan}" style="padding:0.25rem 0.5rem;">
+      <div class="detail-scroll-wrap">
       <table class="detail-subtable" style="width:100%;font-size:0.82rem;">
         <thead><tr>
-          <th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Amount</th><th>Status</th>
+          <th>Time</th><th>Market</th><th>Outcome</th><th>Invested</th><th>Shares</th><th>Status</th><th>P&L</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      </div>
     </td>`;
   } catch (err) {
     detailRow.innerHTML = `<td colspan="${colSpan}" style="padding:0.5rem 1rem;"><em class="text-red">Failed to load trades</em></td>`;
