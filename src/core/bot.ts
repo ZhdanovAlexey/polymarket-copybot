@@ -239,6 +239,12 @@ export class Bot {
   }
 
   private async handleNewTrade(trade: DetectedTrade): Promise<void> {
+    // Monthly stop-loss: skip BUY signals when stopped (SELL still processed)
+    if (trade.action === 'buy' && this.executor.checkMonthlyStop()) {
+      log.debug({ market: trade.marketTitle }, 'Monthly stop active — skipping BUY');
+      return;
+    }
+
     try {
       const result = await this.executor.processTrade(trade);
 
