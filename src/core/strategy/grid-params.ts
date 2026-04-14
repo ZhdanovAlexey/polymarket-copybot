@@ -18,7 +18,7 @@ const FIXED = {
   maxPositions: 20,
   initialCapital: 500,
   slippagePct: 1,
-  commissionPct: 2,
+  commissionPct: 0.1, // Polymarket CLOB: 0% fees, ~$0.01 gas on Polygon ≈ 0.1% on $10 bet
 };
 
 /**
