@@ -18,10 +18,18 @@ export class Portfolio extends EventEmitter {
   }
 
   /**
-   * Get position by token ID
+   * Get OPEN position by token ID. Callers in the trade pipeline (executor
+   * SELL path, stop-loss, scale-out) all mean "is there an open position
+   * we can act on?" — they must not act on closed/redeemed records.
+   *
+   * Without the status filter, repeated SELL signals from a trader would
+   * re-execute against an already-closed position (closePosition only flips
+   * status, it doesn't zero total_shares), causing N duplicate SELL trades
+   * per position and inflating realized P&L.
    */
   getPosition(tokenId: string): BotPosition | undefined {
-    return queries.getPositionByTokenId(tokenId);
+    const pos = queries.getPositionByTokenId(tokenId);
+    return pos && pos.status === 'open' ? pos : undefined;
   }
 
   /**
