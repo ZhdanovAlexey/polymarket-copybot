@@ -592,3 +592,23 @@ export interface TraderBlacklistEntry {
   blacklistedAt: number;
   expiresAt: number;
 }
+
+// Trader Analytics (My Leaderboard)
+export interface TraderAnalyticsRow {
+  address: string;
+  name: string;
+  active: boolean;
+  exitOnly: boolean;
+  probation: boolean;
+  score: number;
+  addedAt: string;
+  copiedTrades: number;
+  wins: number;
+  losses: number;
+  totalPnl: number;
+  avgReturn: number;
+  slippageAvg: number;
+  openPositions: number;
+  closedPositions: number;
+  openInvested: number;
+}

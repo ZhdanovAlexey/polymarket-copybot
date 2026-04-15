@@ -18,6 +18,7 @@ import type {
   MarketCache,
   EquitySnapshot,
   TraderBlacklistEntry,
+  TraderAnalyticsRow,
 } from '../types.js';
 
 // ============================================================
@@ -411,6 +412,31 @@ export function markPositionRedeemed(tokenId: string): void {
 
 export function closePosition(tokenId: string): void {
   getDb().prepare("UPDATE positions SET status = 'closed' WHERE token_id = ?").run(tokenId);
+}
+
+/** Reactivate a paused/exit-only trader — resume copying BUYs. */
+export function reactivateTrader(address: string): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET active = 1, exit_only = 0 WHERE address = ?')
+    .run(address);
+}
+
+export function getTradesByTokenId(tokenId: string): TradeResult[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM trades
+        WHERE token_id = ? AND status IN ('filled','simulated')
+        ORDER BY timestamp ASC`,
+    )
+    .all(tokenId) as Array<Record<string, unknown>>;
+  return rows.map(mapTradeRow);
+}
+
+/** Update mark-to-market price for a position (called by background updater). */
+export function setPositionPrice(tokenId: string, price: number, ts: number): void {
+  getDb()
+    .prepare('UPDATE positions SET current_price = ?, current_price_updated_at = ? WHERE token_id = ?')
+    .run(price, ts, tokenId);
 }
 
 function mapPositionRow(row: Record<string, unknown>): BotPosition {
@@ -1515,4 +1541,105 @@ export function getEstimatedTraderPosition(traderAddress: string, tokenId: strin
     )
     .get(traderAddress, tokenId) as { shares: number } | undefined;
   return Math.max(0, row?.shares ?? 0);
+}
+
+// ============================================================
+// Trader Analytics (My Leaderboard)
+// ============================================================
+
+export function getTraderAnalytics(): TraderAnalyticsRow[] {
+  // Step 0: auto-fix orphaned traders (inactive but with open positions → exit_only)
+  getDb()
+    .prepare(
+      `UPDATE tracked_traders SET exit_only = 1
+       WHERE active = 0 AND exit_only = 0
+       AND EXISTS (
+         SELECT 1 FROM positions p
+         JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY' AND t.trader_address = tracked_traders.address
+         WHERE p.status = 'open'
+       )`,
+    )
+    .run();
+
+  // Step 1: base trader info + trade counts (fast, indexed)
+  const rows = getDb()
+    .prepare(
+      `SELECT
+        tt.address, tt.name, tt.active, tt.exit_only, tt.probation, tt.score, tt.added_at,
+        COALESCE(ts.copied_trades, 0) AS copied_trades,
+        COALESCE(ts.avg_slippage, 0) AS slippage_avg
+      FROM tracked_traders tt
+      LEFT JOIN (
+        SELECT trader_address,
+               COUNT(*) AS copied_trades,
+               AVG(CASE WHEN original_trader_price > 0
+                   THEN ABS(price - original_trader_price) / original_trader_price * 100
+                   ELSE NULL END) AS avg_slippage
+        FROM trades
+        WHERE status IN ('filled','simulated')
+        GROUP BY trader_address
+      ) ts ON ts.trader_address = tt.address
+      WHERE tt.active = 1 OR tt.exit_only = 1
+         OR EXISTS (
+           SELECT 1 FROM positions p
+           JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY' AND t.trader_address = tt.address
+           WHERE p.status = 'open'
+         )`,
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  // Step 2: enrich with closed position stats (already computed by getClosedPositions)
+  const closed = getClosedPositions(10000);
+  const traderClosedStats = new Map<string, { wins: number; losses: number; pnl: number; count: number }>();
+  for (const cp of closed) {
+    const addr = cp.traderAddress;
+    const entry = traderClosedStats.get(addr) ?? { wins: 0, losses: 0, pnl: 0, count: 0 };
+    if (cp.realizedPnl > 0) entry.wins++;
+    else entry.losses++;
+    entry.pnl += cp.realizedPnl;
+    entry.count++;
+    traderClosedStats.set(addr, entry);
+  }
+
+  // Step 3: open position counts per trader (from already-indexed countOpenPositionsFromTrader)
+  const result = rows.map((row) => {
+    const addr = row.address as string;
+    const cs = traderClosedStats.get(addr);
+    return {
+      address: addr,
+      name: row.name as string,
+      active: Boolean(row.active),
+      exitOnly: Boolean(row.exit_only),
+      probation: Boolean(row.probation),
+      score: (row.score as number) ?? 0,
+      addedAt: row.added_at as string,
+      copiedTrades: row.copied_trades as number,
+      wins: cs?.wins ?? 0,
+      losses: cs?.losses ?? 0,
+      totalPnl: cs?.pnl ?? 0,
+      avgReturn: 0,
+      slippageAvg: row.slippage_avg as number,
+      openPositions: countOpenPositionsFromTrader(addr),
+      closedPositions: cs?.count ?? 0,
+      openInvested: 0,
+    };
+  });
+
+  // Sort by realized PnL descending
+  result.sort((a, b) => b.totalPnl - a.totalPnl);
+  return result;
+}
+
+/**
+ * Get open position token IDs attributed to a specific trader.
+ */
+export function getOpenTokenIdsByTrader(traderAddress: string): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT DISTINCT p.token_id FROM positions p
+       JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY'
+       WHERE t.trader_address = ? AND p.status = 'open'`,
+    )
+    .all(traderAddress) as Array<{ token_id: string }>;
+  return rows.map((r) => r.token_id);
 }
