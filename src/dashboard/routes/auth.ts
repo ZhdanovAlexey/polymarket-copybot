@@ -309,6 +309,38 @@ authRouter.get('/settings', (_req, res) => {
       'telegram_chat_id',
       'demo_initial_balance',
       'demo_commission_pct',
+      // Execution
+      'max_spread_pct',
+      'depth_slippage_pct',
+      'depth_adaptive_pct',
+      'take_profit_pct',
+      'partial_scale_out_pct',
+      'partial_scale_out_threshold',
+      'twap_threshold_usd',
+      'twap_slices',
+      'twap_interval_sec',
+      'market_age_factor_enabled',
+      // Risk
+      'stop_loss_mode',
+      'stop_loss_pct',
+      'trailing_stop_pct',
+      'rolling_dd_pct',
+      'rolling_dd_window_days',
+      'rolling_dd_adaptive',
+      'unpause_after_hours',
+      'max_positions_per_market',
+      'max_exposure_per_token_pct',
+      'anomaly_action_size',
+      'anomaly_action_market',
+      'anomaly_action_frequency',
+      'anomaly_reduce_factor',
+      'anomaly_halt_duration_hours',
+      // Selection
+      'adaptive_weights',
+      'max_pairwise_correlation',
+      'probation_size_multiplier',
+      'blacklist_days',
+      'min_resolved_trades_for_real_win_rate',
     ];
     const result: Record<string, string> = {};
     for (const key of keys) {

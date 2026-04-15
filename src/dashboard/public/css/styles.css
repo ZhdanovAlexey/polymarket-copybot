@@ -1053,6 +1053,28 @@ table.sortable thead th.sort-desc::after {
   border-bottom-color: var(--accent-blue);
 }
 
+/* Settings fieldset groups (Execution / Risk / Selection tabs) */
+.settings-fieldset {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px 20px 12px;
+  margin-bottom: 16px;
+}
+
+.settings-fieldset legend {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 6px;
+}
+
+/* Wrap tabs when there are many */
+.settings-tabs {
+  flex-wrap: wrap;
+}
+
 /* --- Setup Wizard --- */
 .wizard-overlay {
   max-width: 640px;

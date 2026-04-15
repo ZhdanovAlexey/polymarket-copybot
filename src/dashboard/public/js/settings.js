@@ -235,6 +235,263 @@ function buildSettingsFormHtml(prefix) {
 }
 
 /* ================================================================
+   Execution settings form
+   ================================================================ */
+
+function buildExecutionFormHtml(prefix) {
+  return `
+    <div class="settings-form" id="${prefix}-execution-form">
+      <fieldset class="settings-fieldset">
+        <legend>Spread &amp; Liquidity</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-max-spread-pct" title="Max allowed spread (ask−bid)/midpoint in %. BUYs are skipped when the spread exceeds this. Typical Polymarket spread: 0.5–15%; raise to 15–20% for active copying.">Max Spread (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-max-spread-pct" class="input-field" value="15" min="0.5" max="100" step="0.5">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-min-liquidity-exec" title="Minimum depth (ask+bid combined) within 2% of midpoint in USD. BUYs are skipped on thin books.">Min Liquidity (USD) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-min-liquidity-exec" class="input-field" value="1000" min="0" max="10000" step="100">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-depth-slippage-pct" title="Range from midpoint (%) used to sum up orderbook depth for liquidity check.">Depth Range (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-depth-slippage-pct" class="input-field" value="2" min="0.5" max="10" step="0.5">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-depth-adaptive-pct" title="When available depth &lt; bet size, reduce bet to this % of available depth (0 = skip instead).">Adaptive Depth (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-depth-adaptive-pct" class="input-field" value="80" min="0" max="100" step="5">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="settings-fieldset">
+        <legend>Exit / Sell Mode</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-sell-mode" title="mirror: copy trader SELLs 1-to-1. proportional: scale SELL by ratio. take_profit: exit at profit threshold. partial_scale_out: sell a portion at threshold, rest mirrors.">Sell Mode <span class="hint">&#x24d8;</span></label>
+            <select id="${prefix}-sell-mode" class="select-filter">
+              <option value="mirror" selected>Mirror (copy SELLs exactly)</option>
+              <option value="proportional">Proportional</option>
+              <option value="take_profit">Take Profit</option>
+              <option value="partial_scale_out">Partial Scale-Out</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-take-profit-pct" title="Exit entire position when unrealized profit reaches this % of invested. Only active when sell_mode = take_profit.">Take Profit (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-take-profit-pct" class="input-field" value="50" min="1" max="500" step="1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-partial-scale-out-pct" title="Portion of position (%) to sell at scale-out trigger. Remainder stays open.">Scale-Out Size (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-partial-scale-out-pct" class="input-field" value="50" min="10" max="100" step="5">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-partial-scale-out-threshold" title="Profit % from avgPrice that triggers scale-out sell. Only active when sell_mode = partial_scale_out.">Scale-Out Trigger (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-partial-scale-out-threshold" class="input-field" value="50" min="1" max="500" step="1">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="settings-fieldset">
+        <legend>TWAP Execution</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-twap-threshold-usd" title="Bets larger than this USD are split into slices and executed gradually (TWAP). 0 = TWAP disabled.">TWAP Threshold (USD) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-twap-threshold-usd" class="input-field" value="50" min="0" max="10000" step="10">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-twap-slices" title="Number of slices to split a large order into when TWAP is triggered.">TWAP Slices <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-twap-slices" class="input-field" value="3" min="1" max="20" step="1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-twap-interval-sec" title="Seconds between each TWAP slice execution.">TWAP Interval (sec) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-twap-interval-sec" class="input-field" value="60" min="5" max="600" step="5">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-market-age-factor-enabled" class="checkbox-label" title="Reduce bet size for markets near expiry. Older markets nearing resolution get a discount factor applied.">
+              <input type="checkbox" id="${prefix}-market-age-factor-enabled" checked>
+              Market Age Factor <span class="hint">&#x24d8;</span>
+            </label>
+          </div>
+        </div>
+      </fieldset>
+    </div>
+  `;
+}
+
+/* ================================================================
+   Risk settings form
+   ================================================================ */
+
+function buildRiskFormHtml(prefix) {
+  const anomalyOpts = `
+    <option value="ignore">Ignore</option>
+    <option value="alert">Alert only</option>
+    <option value="reduce_size">Reduce size</option>
+    <option value="skip_trade">Skip trade</option>
+    <option value="halt_trader">Halt trader</option>
+  `;
+  return `
+    <div class="settings-form" id="${prefix}-risk-form">
+      <fieldset class="settings-fieldset">
+        <legend>Stop-Loss</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-stop-loss-mode" title="disabled: no auto stop-loss. fixed: exit when position drops X% from entry. trailing: trail below peak. both: whichever triggers first.">Stop-Loss Mode <span class="hint">&#x24d8;</span></label>
+            <select id="${prefix}-stop-loss-mode" class="select-filter">
+              <option value="disabled" selected>Disabled</option>
+              <option value="fixed">Fixed</option>
+              <option value="trailing">Trailing</option>
+              <option value="both">Both</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-stop-loss-pct" title="Fixed stop-loss: exit when position value drops by this % from entry price.">Stop-Loss (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-stop-loss-pct" class="input-field" value="20" min="1" max="90" step="1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-trailing-stop-pct" title="Trailing stop: exit when price drops this % below the peak price since entry.">Trailing Stop (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-trailing-stop-pct" class="input-field" value="15" min="1" max="90" step="1">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="settings-fieldset">
+        <legend>Rolling Drawdown</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-rolling-dd-pct" title="Pause new BUYs when portfolio drawdown over the window exceeds this %.">Drawdown Threshold (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-rolling-dd-pct" class="input-field" value="15" min="1" max="100" step="1">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-rolling-dd-window-days" title="Rolling window (days) over which drawdown is measured.">DD Window (days) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-rolling-dd-window-days" class="input-field" value="7" min="1" max="90" step="1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-rolling-dd-adaptive" class="checkbox-label" title="Use EWMA smoothing to reduce noise in rolling drawdown calculation.">
+              <input type="checkbox" id="${prefix}-rolling-dd-adaptive" checked>
+              Adaptive (EWMA smoothing) <span class="hint">&#x24d8;</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-unpause-after-hours" title="Hours to wait before resuming BUYs after drawdown pause is triggered. 0 = manual resume only.">Unpause After (hours) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-unpause-after-hours" class="input-field" value="24" min="0" max="168" step="1">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="settings-fieldset">
+        <legend>Concentration Limits</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-max-positions-per-market" title="Max open positions in the same market. 0 = unlimited.">Max Positions / Market <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-max-positions-per-market" class="input-field" value="1" min="0" max="10" step="1">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-max-exposure-per-token-pct" title="Max % of portfolio that can be allocated to a single token. 0 = unlimited.">Max Token Exposure (%) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-max-exposure-per-token-pct" class="input-field" value="25" min="0" max="100" step="1">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="settings-fieldset">
+        <legend>Anomaly Actions</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-anomaly-action-size" title="Action when an anomalous position size is detected from a trader.">Size Anomaly <span class="hint">&#x24d8;</span></label>
+            <select id="${prefix}-anomaly-action-size" class="select-filter">
+              ${anomalyOpts}
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-anomaly-action-market" title="Action when a market-level anomaly is detected (unusual volume, price spike, etc.).">Market Anomaly <span class="hint">&#x24d8;</span></label>
+            <select id="${prefix}-anomaly-action-market" class="select-filter">
+              ${anomalyOpts}
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-anomaly-action-frequency" title="Action when a trader is placing trades at unusually high frequency.">Frequency Anomaly <span class="hint">&#x24d8;</span></label>
+            <select id="${prefix}-anomaly-action-frequency" class="select-filter">
+              ${anomalyOpts}
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-anomaly-reduce-factor" title="When action = reduce_size, multiply bet by this factor (0.1–1.0). E.g. 0.3 = use 30% of calculated bet.">Reduce Factor <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-anomaly-reduce-factor" class="input-field" value="0.3" min="0.1" max="1.0" step="0.05">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-anomaly-halt-duration-hours" title="When action = halt_trader, stop copying that trader for this many hours.">Halt Duration (hours) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-anomaly-halt-duration-hours" class="input-field" value="24" min="1" max="168" step="1">
+          </div>
+        </div>
+      </fieldset>
+    </div>
+  `;
+}
+
+/* ================================================================
+   Selection settings form
+   ================================================================ */
+
+function buildSelectionFormHtml(prefix) {
+  return `
+    <div class="settings-form" id="${prefix}-selection-form">
+      <fieldset class="settings-fieldset">
+        <legend>Trader Scoring</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-adaptive-weights" class="checkbox-label" title="Periodically recalculate leaderboard scoring weights (PnL/WinRate/Volume) based on recent performance data.">
+              <input type="checkbox" id="${prefix}-adaptive-weights">
+              Adaptive Weights <span class="hint">&#x24d8;</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-min-resolved-trades" title="Minimum resolved trades required before a trader's win rate is used directly (instead of a conservative prior).">Min Resolved Trades <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-min-resolved-trades" class="input-field" value="10" min="1" max="100" step="1">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="settings-fieldset">
+        <legend>Diversification</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-max-pairwise-correlation" title="Skip adding a new trader whose market overlap (Jaccard similarity) with existing top-N traders exceeds this threshold. 1.0 = no filtering.">Max Correlation <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-max-pairwise-correlation" class="input-field" value="0.7" min="0.1" max="1.0" step="0.05">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="settings-fieldset">
+        <legend>Probation &amp; Blacklist</legend>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="${prefix}-probation-size-multiplier" title="New traders are on probation until they accumulate enough trades. During probation, bet sizes are multiplied by this factor (0–1).">Probation Size Multiplier <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-probation-size-multiplier" class="input-field" value="0.3" min="0.1" max="1.0" step="0.05">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}-blacklist-days" title="Days a trader stays blacklisted after being dropped due to poor performance. 0 = never blacklisted.">Blacklist Duration (days) <span class="hint">&#x24d8;</span></label>
+            <input type="number" id="${prefix}-blacklist-days" class="input-field" value="7" min="0" max="30" step="1">
+          </div>
+        </div>
+      </fieldset>
+    </div>
+  `;
+}
+
+/* ================================================================
    Settings modal HTML
    ================================================================ */
 
@@ -250,12 +507,30 @@ function buildSettingsModalHtml() {
           <!-- Tabs -->
           <div class="settings-tabs">
             <button class="settings-tab active" data-tab="trading">Trading</button>
+            <button class="settings-tab" data-tab="execution">Execution</button>
+            <button class="settings-tab" data-tab="risk">Risk</button>
+            <button class="settings-tab" data-tab="selection">Selection</button>
             <button class="settings-tab" data-tab="wallet">Wallet</button>
           </div>
 
           <!-- Trading tab -->
           <div class="settings-tab-content" id="tab-trading">
             ${buildSettingsFormHtml('mod')}
+          </div>
+
+          <!-- Execution tab -->
+          <div class="settings-tab-content hidden" id="tab-execution">
+            ${buildExecutionFormHtml('mod')}
+          </div>
+
+          <!-- Risk tab -->
+          <div class="settings-tab-content hidden" id="tab-risk">
+            ${buildRiskFormHtml('mod')}
+          </div>
+
+          <!-- Selection tab -->
+          <div class="settings-tab-content hidden" id="tab-selection">
+            ${buildSelectionFormHtml('mod')}
           </div>
 
           <!-- Wallet tab -->
@@ -303,6 +578,7 @@ function readSettingsFromForm(prefix) {
   };
 
   return {
+    // Trading
     bet_size_usd: getVal('bet-size'),
     bet_sizing_mode: getVal('bet-sizing-mode'),
     bet_scale_anchor_usd: getVal('bet-scale-anchor-usd'),
@@ -314,13 +590,47 @@ function readSettingsFromForm(prefix) {
     max_slippage_pct: getVal('slippage'),
     daily_loss_limit_usd: getVal('loss-limit'),
     max_open_positions: getVal('max-positions'),
-    min_market_liquidity: getVal('min-liquidity'),
     dry_run: String(getChecked('dry-run')),
     demo_initial_balance: getVal('demo-balance'),
     demo_commission_pct: getVal('demo-commission'),
     telegram_enabled: String(getChecked('tg-enabled')),
     telegram_token: getVal('tg-token'),
     telegram_chat_id: getVal('tg-chat'),
+    // Execution
+    max_spread_pct: getVal('max-spread-pct'),
+    // min_market_liquidity: stored once; exec field takes precedence, falls back to trading field
+    min_market_liquidity: getVal('min-liquidity-exec') || getVal('min-liquidity'),
+    depth_slippage_pct: getVal('depth-slippage-pct'),
+    depth_adaptive_pct: getVal('depth-adaptive-pct'),
+    sell_mode: getVal('sell-mode'),
+    take_profit_pct: getVal('take-profit-pct'),
+    partial_scale_out_pct: getVal('partial-scale-out-pct'),
+    partial_scale_out_threshold: getVal('partial-scale-out-threshold'),
+    twap_threshold_usd: getVal('twap-threshold-usd'),
+    twap_slices: getVal('twap-slices'),
+    twap_interval_sec: getVal('twap-interval-sec'),
+    market_age_factor_enabled: String(getChecked('market-age-factor-enabled')),
+    // Risk
+    stop_loss_mode: getVal('stop-loss-mode'),
+    stop_loss_pct: getVal('stop-loss-pct'),
+    trailing_stop_pct: getVal('trailing-stop-pct'),
+    rolling_dd_pct: getVal('rolling-dd-pct'),
+    rolling_dd_window_days: getVal('rolling-dd-window-days'),
+    rolling_dd_adaptive: String(getChecked('rolling-dd-adaptive')),
+    unpause_after_hours: getVal('unpause-after-hours'),
+    max_positions_per_market: getVal('max-positions-per-market'),
+    max_exposure_per_token_pct: getVal('max-exposure-per-token-pct'),
+    anomaly_action_size: getVal('anomaly-action-size'),
+    anomaly_action_market: getVal('anomaly-action-market'),
+    anomaly_action_frequency: getVal('anomaly-action-frequency'),
+    anomaly_reduce_factor: getVal('anomaly-reduce-factor'),
+    anomaly_halt_duration_hours: getVal('anomaly-halt-duration-hours'),
+    // Selection
+    adaptive_weights: String(getChecked('adaptive-weights')),
+    max_pairwise_correlation: getVal('max-pairwise-correlation'),
+    probation_size_multiplier: getVal('probation-size-multiplier'),
+    blacklist_days: getVal('blacklist-days'),
+    min_resolved_trades_for_real_win_rate: getVal('min-resolved-trades'),
   };
 }
 
@@ -334,6 +644,7 @@ function populateSettingsForm(prefix, settings) {
     if (el) el.checked = val === 'true' || val === true;
   };
 
+  // Trading
   setVal('bet-size', settings.bet_size_usd);
   setVal('bet-sizing-mode', settings.bet_sizing_mode);
   setVal('bet-scale-anchor-usd', settings.bet_scale_anchor_usd);
@@ -354,6 +665,40 @@ function populateSettingsForm(prefix, settings) {
   setChecked('tg-enabled', settings.telegram_enabled);
   setVal('tg-token', settings.telegram_token);
   setVal('tg-chat', settings.telegram_chat_id);
+  // Execution
+  setVal('max-spread-pct', settings.max_spread_pct);
+  setVal('min-liquidity-exec', settings.min_market_liquidity);
+  setVal('depth-slippage-pct', settings.depth_slippage_pct);
+  setVal('depth-adaptive-pct', settings.depth_adaptive_pct);
+  setVal('sell-mode', settings.sell_mode);
+  setVal('take-profit-pct', settings.take_profit_pct);
+  setVal('partial-scale-out-pct', settings.partial_scale_out_pct);
+  setVal('partial-scale-out-threshold', settings.partial_scale_out_threshold);
+  setVal('twap-threshold-usd', settings.twap_threshold_usd);
+  setVal('twap-slices', settings.twap_slices);
+  setVal('twap-interval-sec', settings.twap_interval_sec);
+  setChecked('market-age-factor-enabled', settings.market_age_factor_enabled);
+  // Risk
+  setVal('stop-loss-mode', settings.stop_loss_mode);
+  setVal('stop-loss-pct', settings.stop_loss_pct);
+  setVal('trailing-stop-pct', settings.trailing_stop_pct);
+  setVal('rolling-dd-pct', settings.rolling_dd_pct);
+  setVal('rolling-dd-window-days', settings.rolling_dd_window_days);
+  setChecked('rolling-dd-adaptive', settings.rolling_dd_adaptive);
+  setVal('unpause-after-hours', settings.unpause_after_hours);
+  setVal('max-positions-per-market', settings.max_positions_per_market);
+  setVal('max-exposure-per-token-pct', settings.max_exposure_per_token_pct);
+  setVal('anomaly-action-size', settings.anomaly_action_size);
+  setVal('anomaly-action-market', settings.anomaly_action_market);
+  setVal('anomaly-action-frequency', settings.anomaly_action_frequency);
+  setVal('anomaly-reduce-factor', settings.anomaly_reduce_factor);
+  setVal('anomaly-halt-duration-hours', settings.anomaly_halt_duration_hours);
+  // Selection
+  setChecked('adaptive-weights', settings.adaptive_weights);
+  setVal('max-pairwise-correlation', settings.max_pairwise_correlation);
+  setVal('probation-size-multiplier', settings.probation_size_multiplier);
+  setVal('blacklist-days', settings.blacklist_days);
+  setVal('min-resolved-trades', settings.min_resolved_trades_for_real_win_rate);
 }
 
 /* ================================================================
