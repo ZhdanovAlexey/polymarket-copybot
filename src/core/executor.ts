@@ -358,7 +358,7 @@ export class Executor {
           : p.totalInvested;
         return s + mtm;
       }, 0);
-      const concCheck = this.riskManager.checkConcentration(trade, allPositions, equity);
+      const concCheck = this.riskManager.checkConcentration(trade, allPositions, equity, totalUsd);
       if (!concCheck.allowed) {
         log.warn({ reason: concCheck.reason }, 'Concentration check FAILED');
         return this.createResult(trade, 'BUY', 'skipped', midpoint, 0, 0, concCheck.reason);

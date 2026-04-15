@@ -89,16 +89,22 @@ export class RiskManager {
 
   /**
    * Check concentration limits: max positions per market and max token exposure.
+   *
+   * `ourBetUsd` is the size of OUR intended trade (after proportional sizing,
+   * probation multiplier, anomaly reduce, liquidity adaptation). It is NOT
+   * the trader's trade USD — using trader.usdValue here would incorrectly
+   * skip our small copy-bets whenever the trader places a large order.
    */
   checkConcentration(
     trade: DetectedTrade,
     positions: BotPosition[],
     equity: number,
+    ourBetUsd: number,
   ): RiskCheckResult {
     const marketCheck = this.checkMarketConcentration(trade.conditionId, positions);
     if (!marketCheck.allowed) return marketCheck;
 
-    const tokenCheck = this.checkTokenExposure(trade.tokenId, trade.usdValue || 0, positions, equity);
+    const tokenCheck = this.checkTokenExposure(trade.tokenId, ourBetUsd, positions, equity);
     if (!tokenCheck.allowed) return tokenCheck;
 
     // TODO Phase 5+: event-level concentration via negRiskMarketId from markets_cache
