@@ -829,6 +829,15 @@ table.sortable thead th.sort-desc::after {
   color: var(--accent-yellow);
 }
 
+.trade-reason {
+  color: var(--text-secondary);
+  font-size: 0.85em;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* --- Positions --- */
 .pnl-positive {
   color: var(--accent-green);

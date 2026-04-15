@@ -88,6 +88,7 @@ function renderTable() {
         t.outcome,
         t.side,
         t.status,
+        t.error,
       ]
         .filter(Boolean)
         .join(' ')
@@ -100,7 +101,7 @@ function renderTable() {
   });
 
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No trades found</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No trades found</td></tr>`;
     return;
   }
 
@@ -120,6 +121,7 @@ function renderTable() {
       <td>$${Number(t.totalUsd || 0).toFixed(2)}</td>
       <td>$${Number(t.commission || 0).toFixed(2)}</td>
       <td><span class="status-pill ${t.status}"${t.error ? ` title="${escapeHtml(t.error)}"` : ''}>${t.status}</span></td>
+      <td class="trade-reason" title="${escapeHtml(t.error || '')}">${t.error ? escapeHtml(truncate(t.error, 60)) : '\u2014'}</td>
     </tr>`,
     )
     .join('');
@@ -130,7 +132,7 @@ function renderTable() {
 function exportCsv() {
   if (allTrades.length === 0) return;
 
-  const header = ['Time', 'Trader', 'Address', 'Market', 'Side', 'Outcome', 'Size', 'Price', 'Total USD', 'Fee', 'Status'];
+  const header = ['Time', 'Trader', 'Address', 'Market', 'Side', 'Outcome', 'Size', 'Price', 'Total USD', 'Fee', 'Status', 'Reason'];
   const rows = allTrades.map((t) => [
     t.timestamp,
     t.traderName,
@@ -143,6 +145,7 @@ function exportCsv() {
     t.totalUsd,
     t.commission || 0,
     t.status,
+    `"${(t.error || '').replace(/"/g, '""')}"`,
   ]);
 
   const csv = [header.join(','), ...rows.map((r) => r.join(','))].join('\n');
