@@ -280,6 +280,9 @@ export function runMigrations(db: Database.Database): void {
     'ALTER TABLE positions ADD COLUMN stop_loss_price REAL',
     'ALTER TABLE positions ADD COLUMN trailing_stop_price REAL',
     'ALTER TABLE positions ADD COLUMN scaled_out INTEGER DEFAULT 0',
+    // Phase 3 additions
+    'ALTER TABLE positions ADD COLUMN current_price REAL',
+    'ALTER TABLE positions ADD COLUMN current_price_updated_at INTEGER DEFAULT 0',
     "ALTER TABLE trades ADD COLUMN reason TEXT DEFAULT 'copy'",
     'ALTER TABLE tracked_traders ADD COLUMN halted_until INTEGER DEFAULT 0',
     'ALTER TABLE tracked_traders ADD COLUMN realized_win_rate REAL',

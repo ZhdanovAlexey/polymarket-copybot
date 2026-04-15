@@ -7,6 +7,9 @@ import { Portfolio } from './portfolio.js';
 import { RiskManager } from './risk-manager.js';
 import { Redeemer } from './redeemer.js';
 import { MarketResolver } from './strategy/market-resolver.js';
+import { StopLossMonitor } from './stop-loss-monitor.js';
+import { HealthChecker } from './health-checker.js';
+import { TradeQueue } from './execution/trade-queue.js';
 import { ClobClientWrapper } from '../api/clob-client.js';
 import { DataApi } from '../api/data-api.js';
 import { broadcastEvent } from '../dashboard/routes/sse.js';
@@ -24,23 +27,32 @@ export class Bot {
   private riskManager: RiskManager;
   private redeemer: Redeemer;
   private marketResolver: MarketResolver;
+  private stopLossMonitor: StopLossMonitor;
+  private healthChecker: HealthChecker;
+  private tradeQueue: TradeQueue;
 
   private status: BotStatus = 'idle';
   private startTime: number | null = null;
   private leaderboardRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private pnlSnapshotTimer: ReturnType<typeof setInterval> | null = null;
+  private stopLossQueueTimer: ReturnType<typeof setInterval> | null = null;
+  private mtmTimer: ReturnType<typeof setInterval> | null = null;
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.leaderboard = new Leaderboard();
     this.tracker = new Tracker();
-    this.executor = new Executor();
+    this.healthChecker = new HealthChecker();
+    this.executor = new Executor(undefined, undefined, this.healthChecker);
     this.portfolio = new Portfolio();
     this.riskManager = new RiskManager();
     this.redeemer = new Redeemer();
     this.marketResolver = new MarketResolver(new ClobClientWrapper(), new DataApi());
+    this.stopLossMonitor = new StopLossMonitor();
+    this.tradeQueue = new TradeQueue((trade) => this.handleNewTrade(trade));
 
-    // Wire tracker events to executor
-    this.tracker.on('newTrade', (trade: DetectedTrade) => this.handleNewTrade(trade));
+    // Wire tracker events through the trade queue
+    this.tracker.on('newTrade', (trade: DetectedTrade) => this.tradeQueue.enqueue(trade));
     this.tracker.on('error', (err: Error) => {
       log.error({ err }, 'Tracker error');
       broadcastEvent('alert', { alertType: 'tracker_error', message: err.message, severity: 'warning' });
@@ -127,6 +139,39 @@ export class Bot {
         this.savePnlSnapshot();
       }, 300_000);
 
+      // 6. Schedule mark-to-market (every 60s) + stop-loss checks
+      this.mtmTimer = setInterval(async () => {
+        try {
+          await this.portfolio.markToMarket();
+
+          if (config.stopLossMode !== 'disabled') {
+            const positions = this.portfolio.getAllPositions();
+            const triggered = this.stopLossMonitor.checkPositions(positions);
+            if (triggered.length > 0) {
+              log.info({ count: triggered.length }, 'Stop-loss positions detected');
+            }
+          }
+        } catch (err) {
+          log.error({ err }, 'MTM/stop-loss check failed');
+        }
+      }, 60_000);
+
+      // 7. Stop-loss queue processor (every 10s)
+      this.stopLossQueueTimer = setInterval(() => {
+        this.stopLossMonitor.processQueue(
+          (tokenId, reason) => this.executor.executeStopLossSell(tokenId, reason).then(() => undefined),
+        ).catch((err) => log.error({ err }, 'Stop-loss queue processing failed'));
+      }, 10_000);
+
+      // 8. Health check (real mode only)
+      if (!config.dryRun) {
+        this.healthCheckTimer = setInterval(() => {
+          this.healthChecker.pingClob(config.clobHost).catch(
+            (err) => log.error({ err }, 'Health check ping failed'),
+          );
+        }, config.healthCheckIntervalMs);
+      }
+
       queries.insertActivity('start', 'Bot started');
       broadcastEvent('status', { running: true, tradersCount: traders.length, uptime: 0 });
 
@@ -153,6 +198,20 @@ export class Bot {
       clearInterval(this.pnlSnapshotTimer);
       this.pnlSnapshotTimer = null;
     }
+    if (this.mtmTimer) {
+      clearInterval(this.mtmTimer);
+      this.mtmTimer = null;
+    }
+    if (this.stopLossQueueTimer) {
+      clearInterval(this.stopLossQueueTimer);
+      this.stopLossQueueTimer = null;
+    }
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+
+    this.tradeQueue.drain();
 
     this.status = 'stopped';
     this.startTime = null;
@@ -247,6 +306,12 @@ export class Bot {
   }
 
   private async handleNewTrade(trade: DetectedTrade): Promise<void> {
+    // Health check: skip if bot is halted by circuit breaker
+    if (this.healthChecker.isHalted()) {
+      log.warn({ tradeId: trade.id, action: trade.action }, 'Bot halted by HealthChecker, skipping trade');
+      return;
+    }
+
     try {
       const result = await this.executor.processTrade(trade);
 

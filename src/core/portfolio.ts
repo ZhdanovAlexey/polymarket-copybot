@@ -1,10 +1,16 @@
 import { createLogger } from '../utils/logger.js';
+import { ClobClientWrapper, getClobClient } from '../api/clob-client.js';
 import * as queries from '../db/queries.js';
 import type { BotPosition, TradeResult } from '../types.js';
 
 const log = createLogger('portfolio');
 
 export class Portfolio {
+  private clobClient: ClobClientWrapper;
+
+  constructor(clobClient?: ClobClientWrapper) {
+    this.clobClient = clobClient ?? getClobClient();
+  }
 
   /**
    * Get position by token ID
@@ -98,6 +104,42 @@ export class Portfolio {
       });
       log.info({ tokenId: trade.tokenId, remaining: remainingShares }, 'Position reduced');
     }
+  }
+
+  /**
+   * Mark-to-market: fetch current price for each open position,
+   * update high_price tracker (used by trailing stop-loss).
+   *
+   * Errors per-position are swallowed so one failing token doesn't
+   * block the others.
+   */
+  async markToMarket(): Promise<void> {
+    const positions = this.getAllPositions();
+    if (positions.length === 0) return;
+
+    log.debug({ count: positions.length }, 'Starting mark-to-market');
+
+    for (const p of positions) {
+      try {
+        const price = await this.clobClient.getMidpoint(p.tokenId);
+        if (isNaN(price) || price <= 0) continue;
+
+        const now = Date.now();
+
+        // Always update current price
+        queries.setPositionCurrentPrice(p.tokenId, price, now);
+
+        // Update high_price if this is a new high
+        if (p.highPrice === null || p.highPrice === undefined || price > p.highPrice) {
+          queries.setPositionHighPrice(p.tokenId, price, now);
+          log.debug({ tokenId: p.tokenId, price, prev: p.highPrice }, 'High price updated');
+        }
+      } catch (err) {
+        log.warn({ err, tokenId: p.tokenId }, 'MTM price fetch failed for position');
+      }
+    }
+
+    log.debug({ count: positions.length }, 'Mark-to-market complete');
   }
 
   /**

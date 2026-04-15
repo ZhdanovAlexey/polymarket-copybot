@@ -5,8 +5,10 @@ import { ClobClientWrapper, getClobClient } from '../api/clob-client.js';
 import { fetchWithRetry } from '../utils/retry.js';
 import { RiskManager } from './risk-manager.js';
 import { Portfolio } from './portfolio.js';
+import { computeLiquidityMetrics, checkLiquidity } from './execution/liquidity.js';
 import * as queries from '../db/queries.js';
-import type { DetectedTrade, TradeResult } from '../types.js';
+import type { DetectedTrade, TradeResult, TradeReason } from '../types.js';
+import type { HealthChecker } from './health-checker.js';
 
 const log = createLogger('executor');
 
@@ -18,23 +20,31 @@ export class Executor {
   private portfolio: Portfolio;
   private clobClient: ClobClientWrapper;
   private authenticatedClient: AuthenticatedClobClient | null = null;
-  private authClientInitAttempted = false;
+  private authFailedAt: number | null = null;
+  private healthChecker?: HealthChecker;
 
-  constructor(riskManager?: RiskManager, portfolio?: Portfolio) {
+  constructor(riskManager?: RiskManager, portfolio?: Portfolio, healthChecker?: HealthChecker) {
     this.riskManager = riskManager ?? new RiskManager();
     this.portfolio = portfolio ?? new Portfolio();
     this.clobClient = getClobClient();
+    this.healthChecker = healthChecker;
   }
 
   /**
    * Lazily create an authenticated ClobClient for real order placement.
    * Returns null if credentials are missing (will fall back to dry-run with a warning).
+   * Implements circuit breaker: after failed auth, cooldown 30s before retry.
    */
   private async getAuthenticatedClobClient(): Promise<AuthenticatedClobClient | null> {
     if (this.authenticatedClient) return this.authenticatedClient;
-    if (this.authClientInitAttempted) return null;
 
-    this.authClientInitAttempted = true;
+    // Circuit breaker: if auth failed recently, don't retry immediately
+    if (this.authFailedAt !== null) {
+      const now = Date.now();
+      if (now - this.authFailedAt < 30_000) {
+        throw new Error('Auth on cooldown (30s after last failure)');
+      }
+    }
 
     const { privateKey, clobApiKey, clobSecret, clobPassphrase, clobHost, funderAddress, signatureType } = config;
 
@@ -63,9 +73,15 @@ export class Executor {
       );
 
       log.info({ address: wallet.address }, 'Authenticated ClobClient initialized for real trading');
+      this.healthChecker?.recordAuthResult(true);
       return this.authenticatedClient;
     } catch (err) {
       log.error({ err }, 'Failed to create authenticated ClobClient');
+      this.authFailedAt = Date.now();
+      this.healthChecker?.recordAuthResult(false);
+      if (this.healthChecker?.isHalted()) {
+        throw new Error('Bot halted due to repeated auth failures');
+      }
       return null;
     }
   }
@@ -163,8 +179,49 @@ export class Executor {
     }
 
     try {
-      // 2. Get current price from CLOB
-      const midpoint = await this.clobClient.getMidpoint(trade.tokenId);
+      // 2. Get current price from CLOB (attempt order book fetch for liquidity check too)
+      let midpoint: number;
+      let liquidityChecked = false;
+      let totalUsd = this.computeBetSize(trade.usdValue);
+
+      if (config.minMarketLiquidity > 0 || config.maxSpreadPct > 0) {
+        try {
+          const book = await this.clobClient.getOrderBook(trade.tokenId);
+          const metrics = computeLiquidityMetrics(book, config.depthSlippagePct);
+          midpoint = metrics.midpoint > 0 ? metrics.midpoint : await this.clobClient.getMidpoint(trade.tokenId);
+
+          const liquidityResult = checkLiquidity(metrics, totalUsd, {
+            minLiquidityUsd: config.minMarketLiquidity,
+            maxSpreadPct: config.maxSpreadPct,
+            depthSlippagePct: config.depthSlippagePct,
+            depthAdaptivePct: config.depthAdaptivePct,
+          });
+
+          if (!liquidityResult.allowed) {
+            log.warn({ reason: liquidityResult.reason, tokenId: trade.tokenId }, 'Liquidity check FAILED');
+            return this.createResult(trade, 'BUY', 'skipped', midpoint, 0, 0, liquidityResult.reason);
+          }
+
+          if (liquidityResult.adjustedBetUsd !== undefined) {
+            log.info(
+              { original: totalUsd, adjusted: liquidityResult.adjustedBetUsd },
+              'Bet size adjusted due to insufficient depth',
+            );
+            totalUsd = liquidityResult.adjustedBetUsd;
+          }
+
+          liquidityChecked = true;
+        } catch (liquidityErr) {
+          // Liquidity check failure is non-fatal — fall back to plain midpoint
+          log.warn({ err: liquidityErr, tokenId: trade.tokenId }, 'Liquidity check failed, using midpoint fallback');
+          midpoint = await this.clobClient.getMidpoint(trade.tokenId);
+        }
+      } else {
+        midpoint = await this.clobClient.getMidpoint(trade.tokenId);
+      }
+
+      // suppress unused variable warning
+      void liquidityChecked;
 
       // 3. Check slippage
       const slippageCheck = this.riskManager.checkSlippage(midpoint, trade.price);
@@ -174,7 +231,7 @@ export class Executor {
       }
 
       // 4. Calculate size — proportional to trader's USD when configured.
-      const totalUsd = this.computeBetSize(trade.usdValue);
+      // Note: totalUsd may already be adjusted by liquidity check above
       const size = totalUsd / midpoint;
 
       // 5. Execute or simulate
@@ -445,6 +502,100 @@ export class Executor {
       log.error({ err }, 'SELL execution failed');
       return this.createResult(trade, 'SELL', 'failed', 0, 0, 0, msg);
     }
+  }
+
+  /**
+   * Execute a stop-loss or trailing stop sell for a position.
+   * Creates a synthetic DetectedTrade and delegates to the SELL path.
+   * Does NOT run anomaly detection.
+   */
+  async executeStopLossSell(
+    tokenId: string,
+    reason: 'stop_loss' | 'trailing_stop',
+  ): Promise<TradeResult> {
+    const prefix = reason === 'stop_loss' ? '[STOP-LOSS]' : '[TRAILING-STOP]';
+
+    // Get the position
+    const position = this.portfolio.getPosition(tokenId);
+    if (!position) {
+      log.warn({ tokenId }, `${prefix} No open position found, skipping stop-loss sell`);
+      // Return a minimal skipped result
+      const dummy = this.createStopLossTrade(tokenId, '', '', '', '', 0, 0, reason);
+      return this.createResult(dummy, 'SELL', 'skipped', 0, 0, 0, 'No open position');
+    }
+
+    // Find the trader who opened this position
+    const opener = queries.getOpeningTraderForToken(tokenId);
+    const traderAddress = opener?.address ?? '';
+    const traderName = opener?.name ?? 'stop-loss-system';
+
+    log.info(
+      { tokenId, conditionId: position.conditionId, market: position.marketTitle, reason },
+      `${prefix} Executing stop-loss sell`,
+    );
+
+    const syntheticTrade = this.createStopLossTrade(
+      tokenId,
+      traderAddress,
+      traderName,
+      position.conditionId,
+      position.marketSlug,
+      position.totalShares,
+      position.avgPrice,
+      reason,
+      position.marketTitle,
+      position.outcome,
+    );
+
+    // Execute via the standard SELL path
+    const result = await this.executeSell(syntheticTrade);
+    result.reason = reason as TradeReason;
+
+    // Update the reason column in the DB record that executeSell inserted
+    if (result.status !== 'skipped' && result.id) {
+      try {
+        queries.updateTradeReason(result.id, reason);
+      } catch (err) {
+        log.warn({ err, tradeId: result.id }, 'Failed to update trade reason in DB');
+      }
+    }
+
+    log.info(
+      { tokenId, status: result.status, price: result.price, reason },
+      `${prefix} Stop-loss sell completed`,
+    );
+
+    return result;
+  }
+
+  private createStopLossTrade(
+    tokenId: string,
+    traderAddress: string,
+    traderName: string,
+    conditionId: string,
+    marketSlug: string,
+    size: number,
+    price: number,
+    reason: 'stop_loss' | 'trailing_stop',
+    marketTitle?: string,
+    outcome?: string,
+  ): DetectedTrade {
+    return {
+      id: generateId(),
+      timestamp: Date.now(),
+      traderAddress,
+      traderName,
+      action: 'sell',
+      marketSlug,
+      marketTitle: marketTitle ?? marketSlug,
+      conditionId,
+      tokenId,
+      outcome: outcome ?? '',
+      size,
+      price,
+      usdValue: size * price,
+      transactionHash: `stop-loss-${reason}-${tokenId.slice(0, 8)}-${Date.now()}`,
+    };
   }
 
   /**

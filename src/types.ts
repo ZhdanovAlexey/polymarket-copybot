@@ -179,6 +179,8 @@ export interface BotPosition {
   stopLossPrice?: number | null;
   trailingStopPrice?: number | null;
   scaledOut?: boolean;
+  currentPrice?: number | null;
+  currentPriceUpdatedAt?: number;
 }
 
 export interface PnlSnapshot {

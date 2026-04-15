@@ -195,10 +195,10 @@ export function insertTrade(trade: TradeResult): void {
     .prepare(
       `INSERT INTO trades (id, timestamp, trader_address, trader_name, side, market_slug, market_title,
          condition_id, token_id, outcome, size, price, total_usd, order_id, status, error,
-         original_trader_size, original_trader_price, is_dry_run, commission)
+         original_trader_size, original_trader_price, is_dry_run, commission, reason)
        VALUES (@id, @timestamp, @traderAddress, @traderName, @side, @marketSlug, @marketTitle,
          @conditionId, @tokenId, @outcome, @size, @price, @totalUsd, @orderId, @status, @error,
-         @originalTraderSize, @originalTraderPrice, @isDryRun, @commission)`
+         @originalTraderSize, @originalTraderPrice, @isDryRun, @commission, @reason)`
     )
     .run({
       id: trade.id,
@@ -221,6 +221,7 @@ export function insertTrade(trade: TradeResult): void {
       originalTraderPrice: trade.originalTraderPrice,
       isDryRun: trade.isDryRun ? 1 : 0,
       commission: trade.commission ?? 0,
+      reason: trade.reason ?? 'copy',
     });
 }
 
@@ -430,6 +431,8 @@ function mapPositionRow(row: Record<string, unknown>): BotPosition {
     stopLossPrice: row.stop_loss_price !== undefined ? (row.stop_loss_price as number | null) : undefined,
     trailingStopPrice: row.trailing_stop_price !== undefined ? (row.trailing_stop_price as number | null) : undefined,
     scaledOut: row.scaled_out !== undefined ? (row.scaled_out as number) === 1 : undefined,
+    currentPrice: row.current_price !== undefined ? (row.current_price as number | null) : undefined,
+    currentPriceUpdatedAt: row.current_price_updated_at !== undefined ? (row.current_price_updated_at as number) : undefined,
   };
 }
 
@@ -1390,6 +1393,16 @@ export function setPositionHighPrice(tokenId: string, price: number, ts: number)
     .run(price, ts, tokenId, price);
 }
 
+export function setPositionCurrentPrice(tokenId: string, price: number, ts: number): void {
+  getDb()
+    .prepare(
+      `UPDATE positions
+       SET current_price = ?, current_price_updated_at = ?
+       WHERE token_id = ?`
+    )
+    .run(price, ts, tokenId);
+}
+
 export function markScaledOut(tokenId: string): void {
   getDb()
     .prepare('UPDATE positions SET scaled_out = 1 WHERE token_id = ?')
@@ -1426,4 +1439,10 @@ export function updateTraderScore(address: string, score: number): void {
   getDb()
     .prepare('UPDATE tracked_traders SET score = ? WHERE address = ?')
     .run(score, address);
+}
+
+export function updateTradeReason(tradeId: string, reason: string): void {
+  getDb()
+    .prepare('UPDATE trades SET reason = ? WHERE id = ?')
+    .run(reason, tradeId);
 }
