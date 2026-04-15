@@ -5,6 +5,8 @@ import { sleep } from '../utils/helpers.js';
 import * as queries from '../db/queries.js';
 import type { TrackedTrader, LeaderboardEntry, TradeEntry } from '../types.js';
 import { broadcastEvent } from '../dashboard/routes/sse.js';
+import { AdaptiveWeights } from './strategy/adaptive-weights.js';
+import { TraderCorrelation } from './strategy/correlation.js';
 
 const log = createLogger('leaderboard');
 
@@ -13,9 +15,13 @@ const RATE_LIMIT_DELAY_MS = 250;
 
 export class Leaderboard {
   private dataApi: DataApi;
+  readonly adaptiveWeights: AdaptiveWeights;
+  private correlation: TraderCorrelation;
 
   constructor(dataApi?: DataApi) {
     this.dataApi = dataApi ?? new DataApi();
+    this.adaptiveWeights = new AdaptiveWeights();
+    this.correlation = new TraderCorrelation(this.dataApi);
   }
 
   /**
@@ -96,9 +102,36 @@ export class Leaderboard {
     // 3. Filter
     const filtered = this.filterByActivity(scored);
 
-    // 4. Rank by composite score DESC and take top N.
+    // 4. Rank by composite score DESC.
     filtered.sort((a, b) => b.score - a.score);
-    const topN = filtered.slice(0, config.topTradersCount);
+
+    // 5. Correlation-based diversification (when threshold < 1.0 and we have extras).
+    let topN: TrackedTrader[];
+    if (
+      config.maxPairwiseCorrelation < 1.0 &&
+      filtered.length > config.topTradersCount
+    ) {
+      try {
+        const matrix = await this.correlation.computeCorrelationMatrix(
+          filtered.map((f) => f.address),
+        );
+        topN = this.correlation.selectDiversified(
+          filtered,
+          config.topTradersCount,
+          matrix,
+          config.maxPairwiseCorrelation,
+        );
+        log.info(
+          { beforeCorr: filtered.length, afterCorr: topN.length },
+          'Correlation diversification applied',
+        );
+      } catch (err) {
+        log.warn({ err }, 'Correlation computation failed — falling back to score-only selection');
+        topN = filtered.slice(0, config.topTradersCount);
+      }
+    } else {
+      topN = filtered.slice(0, config.topTradersCount);
+    }
 
     log.info(
       { requested: config.topTradersCount, scored: scored.length, filtered: topN.length },
@@ -141,12 +174,14 @@ export class Leaderboard {
       winRate * 100 * (Math.min(tradesCount, 50) / 50),
     );
 
+    const weights = this.adaptiveWeights.getCurrentWeights();
+
     const rawScore =
-      pnlScore * 0.4 +
-      winRateScore * 0.25 +
-      volumeScore * 0.15 +
-      tradesScore * 0.1 +
-      consistencyScore * 0.1;
+      pnlScore * weights.roi +
+      winRateScore * weights.winRate +
+      volumeScore * weights.sizeProximity +
+      tradesScore * weights.frequency +
+      consistencyScore * weights.consistency;
 
     return rawScore * Math.max(0, Math.min(1, confidence));
   }

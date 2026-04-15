@@ -11,6 +11,10 @@ export class RiskManager {
    * Full risk check before executing a trade
    */
   canTrade(trade: DetectedTrade): RiskCheckResult {
+    // Check 0: Rolling drawdown pause
+    const ddCheck = this.checkDrawdownPause();
+    if (!ddCheck.allowed) return ddCheck;
+
     // Check 1: Daily P&L limit
     const dailyCheck = this.checkDailyLimit();
     if (!dailyCheck.allowed) return dailyCheck;
@@ -35,6 +39,18 @@ export class RiskManager {
     const slippage = Math.abs(currentPrice - traderPrice) / traderPrice * 100;
     if (slippage > config.maxSlippagePct) {
       return { allowed: false, reason: `Slippage ${slippage.toFixed(1)}% exceeds max ${config.maxSlippagePct}%` };
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * Check if trading is paused due to rolling drawdown breach.
+   * This must be the first check in canTrade().
+   */
+  checkDrawdownPause(): RiskCheckResult {
+    const paused = queries.getSetting('drawdown_paused');
+    if (paused === 'true') {
+      return { allowed: false, reason: 'Rolling drawdown pause active' };
     }
     return { allowed: true };
   }

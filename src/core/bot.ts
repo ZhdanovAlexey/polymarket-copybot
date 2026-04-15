@@ -12,6 +12,8 @@ import { HealthChecker } from './health-checker.js';
 import { TradeQueue } from './execution/trade-queue.js';
 import { TraderRotation } from './strategy/rotation.js';
 import { PerformanceTracker } from './strategy/performance.js';
+import { DrawdownMonitor } from './drawdown-monitor.js';
+import { AutoOptimizer } from './strategy/auto-optimizer.js';
 import { ClobClientWrapper } from '../api/clob-client.js';
 import { DataApi } from '../api/data-api.js';
 import { broadcastEvent } from '../dashboard/routes/sse.js';
@@ -34,6 +36,9 @@ export class Bot {
   private tradeQueue: TradeQueue;
   private rotation: TraderRotation;
 
+  private drawdownMonitor: DrawdownMonitor;
+  private autoOptimizer: AutoOptimizer;
+
   private status: BotStatus = 'idle';
   private startTime: number | null = null;
   private leaderboardRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -42,6 +47,7 @@ export class Bot {
   private mtmTimer: ReturnType<typeof setInterval> | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private rotationTimer: ReturnType<typeof setInterval> | null = null;
+  private weightsRecalcTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.leaderboard = new Leaderboard();
@@ -55,6 +61,8 @@ export class Bot {
     this.stopLossMonitor = new StopLossMonitor();
     this.tradeQueue = new TradeQueue((trade) => this.handleNewTrade(trade));
     this.rotation = new TraderRotation(this.leaderboard, new PerformanceTracker());
+    this.drawdownMonitor = new DrawdownMonitor();
+    this.autoOptimizer = new AutoOptimizer();
 
     // Wire tracker events through the trade queue
     this.tracker.on('newTrade', (trade: DetectedTrade) => this.tradeQueue.enqueue(trade));
@@ -176,7 +184,7 @@ export class Bot {
         this.savePnlSnapshot();
       }, 300_000);
 
-      // 6. Schedule mark-to-market (every 60s) + stop-loss checks
+      // 6. Schedule mark-to-market (every 60s) + stop-loss + drawdown checks
       this.mtmTimer = setInterval(async () => {
         try {
           await this.portfolio.markToMarket();
@@ -188,10 +196,34 @@ export class Bot {
               log.info({ count: triggered.length }, 'Stop-loss positions detected');
             }
           }
+
+          // Rolling drawdown check
+          const positions = this.portfolio.getAllPositions();
+          const lockedIn = positions.reduce((s, p) => s + (p.totalInvested ?? 0), 0);
+          const balanceUsdc = config.dryRun ? queries.getDemoBalance() : 0;
+          const equity = balanceUsdc + lockedIn;
+          this.drawdownMonitor.checkDrawdown(equity);
+          this.drawdownMonitor.checkUnpause();
         } catch (err) {
           log.error({ err }, 'MTM/stop-loss check failed');
         }
       }, 60_000);
+
+      // 6b. Adaptive weights recalc timer (if enabled)
+      if (config.adaptiveWeights) {
+        const weightsMs = config.weightsRecalcDays * 86400 * 1000;
+        this.weightsRecalcTimer = setInterval(() => {
+          try {
+            const weights = this.leaderboard.adaptiveWeights.recalculate();
+            if (weights) log.info({ weights }, 'Scoring weights recalculated');
+          } catch (err) {
+            log.error({ err }, 'Weights recalc failed');
+          }
+        }, weightsMs);
+      }
+
+      // 6c. Start auto-optimizer
+      this.autoOptimizer.start();
 
       // 7. Stop-loss queue processor (every 10s)
       this.stopLossQueueTimer = setInterval(() => {
@@ -251,7 +283,12 @@ export class Bot {
       clearInterval(this.rotationTimer);
       this.rotationTimer = null;
     }
+    if (this.weightsRecalcTimer) {
+      clearInterval(this.weightsRecalcTimer);
+      this.weightsRecalcTimer = null;
+    }
 
+    this.autoOptimizer.stop();
     this.tradeQueue.drain();
 
     this.status = 'stopped';
