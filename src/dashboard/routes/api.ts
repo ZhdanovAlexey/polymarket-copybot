@@ -514,3 +514,55 @@ apiRouter.get('/strategy/rotations', (req, res) => {
     res.status(500).json({ error: (err as Error).message });
   }
 });
+
+// ============================================================
+// Conviction Params API
+// ============================================================
+
+// GET /api/conviction-params
+apiRouter.get('/conviction-params', (_req, res) => {
+  try {
+    const params = queries.getConvictionParams();
+    res.json(params);
+  } catch (err) {
+    log.error({ err }, 'Failed to get conviction params');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/conviction-params
+apiRouter.post('/conviction-params', async (req, res) => {
+  try {
+    const { convictionStore } = await import('../../core/strategy/conviction-store.js');
+    const body = req.body as Record<string, unknown>;
+    const params = {
+      betBase: Number(body.betBase),
+      f1Anchor: Number(body.f1Anchor),
+      f1Max: Number(body.f1Max),
+      w2: Number(body.w2),
+      w3: Number(body.w3),
+      f4Boost: Number(body.f4Boost),
+    };
+    if (Object.values(params).some((v) => isNaN(v))) {
+      res.status(400).json({ error: 'All params must be numeric' });
+      return;
+    }
+    convictionStore.updateParams(params, 'manual', 'Manual override via API');
+    res.json({ ok: true, params });
+  } catch (err) {
+    log.error({ err }, 'Failed to update conviction params');
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/conviction-params/history?limit=50
+apiRouter.get('/conviction-params/history', (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const history = queries.getConvictionHistory(limit);
+    res.json(history);
+  } catch (err) {
+    log.error({ err }, 'Failed to get conviction params history');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});

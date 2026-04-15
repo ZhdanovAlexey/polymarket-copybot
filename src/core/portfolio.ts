@@ -1,15 +1,20 @@
+import { EventEmitter } from 'node:events';
 import { createLogger } from '../utils/logger.js';
 import { ClobClientWrapper, getClobClient } from '../api/clob-client.js';
 import * as queries from '../db/queries.js';
-import type { BotPosition, TradeResult } from '../types.js';
+import type { BotPosition, ExitSignal, TradeResult } from '../types.js';
+import { ExitStrategy } from './strategy/exit-strategy.js';
 
 const log = createLogger('portfolio');
 
-export class Portfolio {
+export class Portfolio extends EventEmitter {
   private clobClient: ClobClientWrapper;
+  private exitStrategy: ExitStrategy;
 
   constructor(clobClient?: ClobClientWrapper) {
+    super();
     this.clobClient = clobClient ?? getClobClient();
+    this.exitStrategy = new ExitStrategy();
   }
 
   /**
@@ -133,6 +138,14 @@ export class Portfolio {
         if (p.highPrice === null || p.highPrice === undefined || price > p.highPrice) {
           queries.setPositionHighPrice(p.tokenId, price, now);
           log.debug({ tokenId: p.tokenId, price, prev: p.highPrice }, 'High price updated');
+        }
+
+        // Price-based exit signal evaluation (take_profit / partial_scale_out)
+        const alreadyScaledOut = queries.hasScaledOut(p.tokenId);
+        const signal = this.exitStrategy.evaluatePriceExit(p, price, alreadyScaledOut);
+        if (signal) {
+          log.debug({ tokenId: p.tokenId, triggerSource: signal.triggerSource, sellPct: signal.sellPct }, 'Exit signal emitted');
+          this.emit('exitSignal', signal as ExitSignal);
         }
       } catch (err) {
         log.warn({ err, tokenId: p.tokenId }, 'MTM price fetch failed for position');

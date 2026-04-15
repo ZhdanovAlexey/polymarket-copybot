@@ -74,6 +74,10 @@ export interface GammaMarket {
   closed: boolean;
   volume: number;
   liquidity: number;
+  /** ISO string of market creation time (used for F5 market-age factor). May be absent. */
+  createdAt?: string;
+  /** End / resolution date of the market (ISO string). */
+  endDate?: string;
 }
 
 export interface GammaEvent {

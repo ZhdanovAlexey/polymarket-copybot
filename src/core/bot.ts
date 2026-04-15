@@ -17,7 +17,7 @@ import { DataApi } from '../api/data-api.js';
 import { broadcastEvent } from '../dashboard/routes/sse.js';
 import { setBotState } from '../dashboard/routes/api.js';
 import * as queries from '../db/queries.js';
-import type { BotStatus, DetectedTrade, TrackedTrader } from '../types.js';
+import type { BotStatus, DetectedTrade, ExitSignal, TrackedTrader } from '../types.js';
 
 const log = createLogger('bot');
 
@@ -75,9 +75,25 @@ export class Bot {
     this.startTime = Date.now();
     setBotState(true);
 
+    // Subscribe to price-based exit signals from portfolio (take_profit / scale_out)
+    this.portfolio.on('exitSignal', async (signal: ExitSignal) => {
+      log.info({ signal }, 'Exit signal triggered');
+      try {
+        await this.executor.executePriceExit(signal);
+        if (signal.triggerSource === 'scale_out') {
+          queries.markScaledOut(signal.tokenId);
+        }
+      } catch (err) {
+        log.error({ err, signal }, 'Exit signal execution failed');
+      }
+    });
+
     try {
       // 0. Reload settings from DB (in case user changed them via UI)
       reloadConfigFromDb(queries.getSetting);
+
+      // 0a. Resume any stale TWAP slices from previous session
+      await this.executor.twapExecutor.resumeIncomplete();
 
       // 0b. Initialize demo balance if needed
       if (config.dryRun) {

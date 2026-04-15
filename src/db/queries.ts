@@ -1492,3 +1492,27 @@ export function updateTradeReason(tradeId: string, reason: string): void {
     .prepare('UPDATE trades SET reason = ? WHERE id = ?')
     .run(reason, tradeId);
 }
+
+// ============================================================
+// Exit Strategy Helpers
+// ============================================================
+
+/**
+ * Estimate how many shares a given trader holds for a given token,
+ * based on our own copy-trade records (BUY − SELL of our executed trades).
+ * Returns 0 if no trades found or net is negative.
+ */
+export function getEstimatedTraderPosition(traderAddress: string, tokenId: string): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(
+         SUM(CASE WHEN side = 'BUY'  THEN original_trader_size ELSE 0 END)
+         - SUM(CASE WHEN side = 'SELL' THEN original_trader_size ELSE 0 END),
+         0
+       ) AS shares
+       FROM trades
+       WHERE trader_address = ? AND token_id = ? AND status IN ('simulated', 'filled')`
+    )
+    .get(traderAddress, tokenId) as { shares: number } | undefined;
+  return Math.max(0, row?.shares ?? 0);
+}

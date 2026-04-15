@@ -2,13 +2,18 @@ import { config } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { generateId, sleep } from '../utils/helpers.js';
 import { ClobClientWrapper, getClobClient } from '../api/clob-client.js';
+import { GammaApi } from '../api/gamma-api.js';
 import { fetchWithRetry } from '../utils/retry.js';
 import { RiskManager } from './risk-manager.js';
 import { Portfolio } from './portfolio.js';
 import { AnomalyDetector } from './strategy/anomaly.js';
+import { ExitStrategy } from './strategy/exit-strategy.js';
+import { convictionStore } from './strategy/conviction-store.js';
+import { computeConviction } from './strategy/conviction.js';
+import { TwapExecutor } from './execution/twap.js';
 import { computeLiquidityMetrics, checkLiquidity } from './execution/liquidity.js';
 import * as queries from '../db/queries.js';
-import type { DetectedTrade, TradeResult, TradeReason } from '../types.js';
+import type { DetectedTrade, TradeResult, TradeReason, ExitSignal } from '../types.js';
 import type { HealthChecker } from './health-checker.js';
 
 const log = createLogger('executor');
@@ -20,17 +25,23 @@ export class Executor {
   private riskManager: RiskManager;
   private portfolio: Portfolio;
   private clobClient: ClobClientWrapper;
+  private gammaApi: GammaApi;
   private authenticatedClient: AuthenticatedClobClient | null = null;
   private authFailedAt: number | null = null;
   private healthChecker?: HealthChecker;
   private anomalyDetector: AnomalyDetector;
+  private exitStrategy: ExitStrategy;
+  readonly twapExecutor: TwapExecutor;
 
   constructor(riskManager?: RiskManager, portfolio?: Portfolio, healthChecker?: HealthChecker) {
     this.riskManager = riskManager ?? new RiskManager();
     this.portfolio = portfolio ?? new Portfolio();
     this.clobClient = getClobClient();
+    this.gammaApi = new GammaApi();
     this.healthChecker = healthChecker;
     this.anomalyDetector = new AnomalyDetector();
+    this.exitStrategy = new ExitStrategy();
+    this.twapExecutor = new TwapExecutor();
   }
 
   /**
@@ -164,6 +175,65 @@ export class Executor {
   }
 
   /**
+   * Lookup market age from markets_cache (TTL-bounded). On miss, fetches from
+   * GammaApi and populates the cache. Returns age in hours, or undefined if
+   * createdAt is not available (F5 will default to 1.0).
+   */
+  private async lookupMarketAgeHours(conditionId: string): Promise<number | undefined> {
+    try {
+      let cache = queries.getMarketCache(conditionId);
+      const now = Date.now();
+      const ttlExpired =
+        !cache || new Date(cache.cachedAt).getTime() < now - config.marketAgeCacheTtlMs;
+
+      if (ttlExpired) {
+        const market = await this.gammaApi.getMarketByConditionId(conditionId);
+        queries.upsertMarketCache({
+          conditionId,
+          createdAt: market?.createdAt ?? null,
+          endDate: market?.endDate ?? null,
+          volume: market?.volume ?? null,
+          liquidity: market?.liquidity ?? null,
+          cachedAt: new Date().toISOString(),
+        });
+        cache = queries.getMarketCache(conditionId);
+      }
+
+      if (cache?.createdAt) {
+        return (now - new Date(cache.createdAt).getTime()) / 3_600_000;
+      }
+    } catch (err) {
+      log.debug({ err, conditionId }, 'Market age lookup failed, F5=1.0');
+    }
+    return undefined;
+  }
+
+  /**
+   * Compute conviction-adjusted bet size using the conviction store + F1-F5 factors.
+   * Falls back to legacy computeBetSize when conviction module yields 0 or errors.
+   */
+  private async computeConvictionBet(trade: DetectedTrade): Promise<number> {
+    try {
+      const traderRec = queries.getTraderByAddress(trade.traderAddress);
+      const winRate = traderRec?.realizedWinRate ?? traderRec?.winRate ?? 0.5;
+      const score = traderRec?.score ?? 0;
+      const marketAgeHours = await this.lookupMarketAgeHours(trade.conditionId);
+
+      const bet = computeConviction({
+        traderUsd: trade.usdValue,
+        winRate,
+        score,
+        marketAgeHours,
+      });
+
+      if (bet > 0) return bet;
+    } catch (err) {
+      log.warn({ err }, 'computeConvictionBet failed, falling back to computeBetSize');
+    }
+    return this.computeBetSize(trade.usdValue);
+  }
+
+  /**
    * Execute a BUY order (or simulate in dry run)
    */
   async executeBuy(trade: DetectedTrade): Promise<TradeResult> {
@@ -206,7 +276,7 @@ export class Executor {
       // 2b. Get current price from CLOB (attempt order book fetch for liquidity check too)
       let midpoint: number;
       let liquidityChecked = false;
-      let totalUsd = this.computeBetSize(trade.usdValue);
+      let totalUsd = await this.computeConvictionBet(trade);
 
       if (config.minMarketLiquidity > 0 || config.maxSpreadPct > 0) {
         try {
@@ -297,6 +367,69 @@ export class Executor {
       // 5. Calculate size — proportional to trader's USD when configured.
       // Note: totalUsd may already be adjusted by liquidity check above
       const size = totalUsd / midpoint;
+
+      // 5b. TWAP: split large orders across multiple time-sliced executions
+      if (this.twapExecutor.shouldUseTwap(totalUsd)) {
+        const plan = this.twapExecutor.createPlan(trade, totalUsd, midpoint);
+        log.info({ plan }, 'Executing BUY via TWAP');
+
+        const twapResult = await this.twapExecutor.execute(
+          plan,
+          (tokenId) => this.clobClient.getMidpoint(tokenId),
+          async (sliceUsd, price, sliceNum) => {
+            try {
+              if (config.dryRun) {
+                // Simulate slice: apply small slippage per slice position
+                const slippage = 1 + sliceNum * 0.002;
+                const execPrice = price * slippage;
+                const sliceSize = sliceUsd / execPrice;
+                const commission = sliceUsd * (config.demoCommissionPct / 100);
+                const balance = queries.getDemoBalance();
+                if (sliceUsd + commission > balance) {
+                  return { success: false, error: 'Insufficient demo balance for TWAP slice' };
+                }
+                queries.setDemoBalance(balance - sliceUsd - commission);
+                // Record the slice trade in DB
+                const sliceTrade = { ...trade, size: sliceSize, price: execPrice, usdValue: sliceUsd };
+                const sliceResult = this.createResult(sliceTrade, 'BUY', 'simulated', execPrice, sliceSize, sliceUsd);
+                sliceResult.isDryRun = true;
+                sliceResult.commission = commission;
+                queries.insertTrade(sliceResult);
+                this.portfolio.updateAfterBuy(sliceResult);
+                return { success: true, executedPrice: execPrice };
+              }
+              // Real mode: delegate to standard order placement
+              const authClient = await this.getAuthenticatedClobClient();
+              if (!authClient) return { success: false, error: 'No auth client' };
+              const { Side, OrderType } = await import('@polymarket/clob-client');
+              const obForSlice = await authClient.getOrderBook(trade.tokenId);
+              const tickSizeSlice = obForSlice.tick_size ?? '0.01';
+              const alignedPrice = this.roundToTickSize(price, tickSizeSlice);
+              const sliceSize = sliceUsd / alignedPrice;
+              const resp = await authClient.createAndPostOrder(
+                { tokenID: trade.tokenId, price: alignedPrice, side: Side.BUY, size: sliceSize },
+                { tickSize: tickSizeSlice as import('@polymarket/clob-client').TickSize, negRisk: obForSlice.neg_risk ?? false },
+                OrderType.GTC,
+              );
+              if (!resp?.success) return { success: false, error: resp?.errorMsg ?? 'Order failed' };
+              const sliceResult = this.createResult(trade, 'BUY', 'filled', alignedPrice, sliceSize, sliceUsd);
+              sliceResult.orderId = resp.orderID;
+              queries.insertTrade(sliceResult);
+              this.portfolio.updateAfterBuy(sliceResult);
+              return { success: true, executedPrice: alignedPrice };
+            } catch (err) {
+              return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+          },
+        );
+
+        if (twapResult.slicesExecuted === 0) {
+          return this.createResult(trade, 'BUY', 'failed', midpoint, 0, 0, 'TWAP: all slices failed/drifted');
+        }
+
+        const twapSize = twapResult.avgPrice > 0 ? twapResult.totalFilled / twapResult.avgPrice : 0;
+        return this.createResult(trade, 'BUY', 'simulated', twapResult.avgPrice, twapSize, twapResult.totalFilled);
+      }
 
       // 6. Execute or simulate
       if (config.dryRun) {
@@ -448,8 +581,27 @@ export class Executor {
         return this.createResult(trade, 'SELL', 'skipped', 0, 0, 0, 'No bids in orderbook');
       }
 
-      // 3. Conservative mode: sell entire position
-      const size = position.totalShares;
+      // 3. Determine sell size based on exit strategy
+      let size: number;
+      {
+        const estimatedTraderPos = queries.getEstimatedTraderPosition(trade.traderAddress, trade.tokenId);
+        const signal = this.exitStrategy.evaluateTraderSell(
+          trade,
+          position,
+          estimatedTraderPos,
+          trade.size,
+        );
+        if (!signal) {
+          // sellMode = take_profit or partial_scale_out — don't mirror on trader SELL
+          log.info(
+            { trader: trade.traderAddress, tokenId: trade.tokenId, sellMode: config.sellMode },
+            'SELL: exit strategy returned no action, skipping trader mirror',
+          );
+          return this.createResult(trade, 'SELL', 'skipped', bestBid, 0, 0, 'Exit strategy: no action for current sellMode');
+        }
+        size = Math.min(position.totalShares, position.totalShares * signal.sellPct);
+        log.debug({ sellPct: signal.sellPct, size, reason: signal.reason }, 'SELL size determined by exit strategy');
+      }
       const totalUsd = size * bestBid;
 
       // 4. Execute or simulate
@@ -630,6 +782,169 @@ export class Executor {
     );
 
     return result;
+  }
+
+  /**
+   * Execute a price-triggered exit (take_profit or scale_out).
+   * Called by Bot after portfolio emits an 'exitSignal' event.
+   */
+  async executePriceExit(signal: ExitSignal): Promise<TradeResult> {
+    const position = this.portfolio.getPosition(signal.tokenId);
+    if (!position) {
+      const dummy = this.createSyntheticTrade(signal.tokenId, signal.conditionId, '', '', '', 0, 0);
+      return this.createResult(dummy, 'SELL', 'skipped', 0, 0, 0, `No open position for ${signal.tokenId}`);
+    }
+
+    const sellSize = position.totalShares * signal.sellPct;
+    const opener = queries.getOpeningTraderForToken(signal.tokenId);
+    const traderAddress = opener?.address ?? '';
+    const traderName = 'exit-strategy';
+
+    log.info(
+      { tokenId: signal.tokenId, triggerSource: signal.triggerSource, sellPct: signal.sellPct, sellSize, reason: signal.reason },
+      'Executing price exit',
+    );
+
+    const syntheticTrade = this.createSyntheticTrade(
+      signal.tokenId,
+      signal.conditionId,
+      traderAddress,
+      traderName,
+      position.marketSlug,
+      sellSize,
+      position.currentPrice ?? position.avgPrice,
+      position.marketTitle,
+      position.outcome,
+    );
+
+    // Use existing SELL path; override size via trade.size
+    const result = await this.executeSellWithSize(syntheticTrade, sellSize);
+
+    // Tag the reason
+    const reason = signal.triggerSource === 'take_profit' ? 'take_profit'
+      : signal.triggerSource === 'scale_out' ? 'scale_out'
+      : 'copy';
+    result.reason = reason as TradeReason;
+    if (result.status !== 'skipped' && result.id) {
+      try { queries.updateTradeReason(result.id, reason); } catch { /* ignore */ }
+    }
+
+    return result;
+  }
+
+  /**
+   * Internal SELL that uses a specific size override instead of full position.
+   * Bypasses exit strategy evaluation (already resolved by the caller).
+   */
+  private async executeSellWithSize(trade: DetectedTrade, overrideSize: number): Promise<TradeResult> {
+    const position = this.portfolio.getPosition(trade.tokenId);
+    if (!position) {
+      return this.createResult(trade, 'SELL', 'skipped', 0, 0, 0, 'No position');
+    }
+
+    try {
+      const book = await this.clobClient.getOrderBook(trade.tokenId);
+      const bestBid = this.clobClient.getBestBid(book) ?? 0;
+      if (bestBid <= 0) {
+        return this.createResult(trade, 'SELL', 'skipped', 0, 0, 0, 'No bids in orderbook');
+      }
+
+      const size = Math.min(overrideSize, position.totalShares);
+      const totalUsd = size * bestBid;
+
+      if (config.dryRun) {
+        const commission = totalUsd * (config.demoCommissionPct / 100);
+        const demoBalance = queries.getDemoBalance();
+        queries.setDemoBalance(demoBalance + totalUsd - commission);
+        const pnl = totalUsd - position.avgPrice * size;
+        log.info(
+          { size: size.toFixed(2), price: bestBid.toFixed(4), total: totalUsd.toFixed(2), pnl: pnl.toFixed(2), commission: commission.toFixed(2) },
+          'DRY RUN: SELL (price exit)',
+        );
+        const result = this.createResult(trade, 'SELL', 'simulated', bestBid, size, totalUsd);
+        result.isDryRun = true;
+        result.commission = commission;
+        queries.insertTrade(result);
+        this.portfolio.updateAfterSell(result);
+        queries.insertActivity('trade', `DRY RUN SELL (exit): ${trade.marketTitle} - ${size.toFixed(2)} shares @ $${bestBid.toFixed(4)} (P&L: $${pnl.toFixed(2)})`);
+        return result;
+      }
+
+      // Real mode
+      const authClient = await this.getAuthenticatedClobClient();
+      if (!authClient) {
+        const pnl = totalUsd - position.avgPrice * size;
+        const fallbackResult = this.createResult(trade, 'SELL', 'simulated', bestBid, size, totalUsd);
+        fallbackResult.isDryRun = true;
+        fallbackResult.error = 'Missing credentials — executed as dry-run';
+        queries.insertTrade(fallbackResult);
+        queries.insertActivity('trade', `FALLBACK DRY RUN SELL: ${trade.marketTitle} — missing credentials (P&L: $${pnl.toFixed(2)})`);
+        return fallbackResult;
+      }
+
+      const orderBookData = await authClient.getOrderBook(trade.tokenId);
+      const tickSize = orderBookData.tick_size ?? '0.01';
+      const negRisk = orderBookData.neg_risk ?? false;
+      const adjustedPrice = this.roundToTickSize(bestBid, tickSize);
+      const { Side, OrderType } = await import('@polymarket/clob-client');
+      const orderResponse = await authClient.createAndPostOrder(
+        { tokenID: trade.tokenId, price: adjustedPrice, side: Side.SELL, size },
+        { tickSize: tickSize as import('@polymarket/clob-client').TickSize, negRisk },
+        OrderType.GTC,
+      );
+
+      if (!orderResponse?.success) {
+        const errMsg = orderResponse?.errorMsg ?? 'Order placement failed';
+        return this.createResult(trade, 'SELL', 'failed', adjustedPrice, size, totalUsd, errMsg);
+      }
+
+      const orderId = orderResponse.orderID;
+      const immediateStatus = (orderResponse.status ?? '').toUpperCase();
+      let fillStatus: 'filled' | 'partial' | 'failed';
+      if (immediateStatus === 'MATCHED') fillStatus = 'filled';
+      else if (immediateStatus === 'LIVE' || immediateStatus === 'DELAYED') fillStatus = await this.waitForOrderFill(orderId);
+      else fillStatus = 'partial';
+
+      const result = this.createResult(trade, 'SELL', fillStatus, adjustedPrice, size, totalUsd);
+      result.orderId = orderId;
+      queries.insertTrade(result);
+      if (fillStatus === 'filled' || fillStatus === 'partial') this.portfolio.updateAfterSell(result);
+      queries.insertActivity('trade', `REAL SELL (exit): ${trade.marketTitle} — ${size.toFixed(2)} shares @ $${adjustedPrice.toFixed(4)} [${fillStatus}] orderId=${orderId}`);
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ err }, 'SELL (price exit) execution failed');
+      return this.createResult(trade, 'SELL', 'failed', 0, 0, 0, msg);
+    }
+  }
+
+  private createSyntheticTrade(
+    tokenId: string,
+    conditionId: string,
+    traderAddress: string,
+    traderName: string,
+    marketSlug: string,
+    size: number,
+    price: number,
+    marketTitle?: string,
+    outcome?: string,
+  ): DetectedTrade {
+    return {
+      id: generateId(),
+      timestamp: Date.now(),
+      traderAddress,
+      traderName,
+      action: 'sell',
+      marketSlug,
+      marketTitle: marketTitle ?? marketSlug,
+      conditionId,
+      tokenId,
+      outcome: outcome ?? '',
+      size,
+      price,
+      usdValue: size * price,
+      transactionHash: `price-exit-${tokenId.slice(0, 8)}-${Date.now()}`,
+    };
   }
 
   private createStopLossTrade(
