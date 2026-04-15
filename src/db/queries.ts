@@ -647,6 +647,52 @@ export function getAllPerformance(): TraderPerformance[] {
   }));
 }
 
+export function getPerformanceByTraderSince(traderAddress: string, sinceTs: number): TraderPerformance | undefined {
+  // sinceTs is a unix timestamp in seconds; convert to ISO date for comparison
+  const sinceDate = new Date(sinceTs * 1000).toISOString().split('T')[0];
+  const row = getDb()
+    .prepare(
+      `SELECT trader_address,
+              SUM(copied_trades) as copied_trades,
+              SUM(wins) as wins,
+              SUM(losses) as losses,
+              SUM(total_pnl) as total_pnl,
+              AVG(avg_return) as avg_return,
+              AVG(slippage_avg) as slippage_avg,
+              MAX(date) as last_updated
+       FROM trader_performance
+       WHERE trader_address = ? AND date >= ?
+       GROUP BY trader_address`
+    )
+    .get(traderAddress, sinceDate) as Record<string, unknown> | undefined;
+
+  if (!row) return undefined;
+
+  return {
+    traderId: row.trader_address as string,
+    copiedTrades: row.copied_trades as number,
+    wins: row.wins as number,
+    losses: row.losses as number,
+    totalPnl: row.total_pnl as number,
+    avgReturn: row.avg_return as number,
+    sharpe: 0,
+    slippageAvg: row.slippage_avg as number,
+    lastUpdated: row.last_updated as string,
+  };
+}
+
+export function updateTraderProbationTradesLeft(address: string, tradesLeft: number): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET probation_trades_left = ? WHERE address = ?')
+    .run(tradesLeft, address);
+}
+
+export function graduateFromProbation(address: string): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET probation = 0, probation_trades_left = 0 WHERE address = ?')
+    .run(address);
+}
+
 // ============================================================
 // Rotation Log
 // ============================================================

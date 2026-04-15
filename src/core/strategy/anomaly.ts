@@ -1,7 +1,7 @@
 import { config } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
 import * as queries from '../../db/queries.js';
-import type { DetectedTrade, AnomalyAlert } from '../../types.js';
+import type { DetectedTrade, AnomalyAlert, AnomalyAction } from '../../types.js';
 
 const log = createLogger('anomaly');
 
@@ -98,6 +98,18 @@ export class AnomalyDetector {
     }
 
     return null;
+  }
+
+  /**
+   * Map an anomaly alert to the configured action for that anomaly type.
+   */
+  getActionForAnomaly(anomaly: AnomalyAlert): AnomalyAction {
+    const actionMap: Record<string, AnomalyAction> = {
+      size: config.anomalyActionSize,
+      market: config.anomalyActionMarket,
+      frequency: config.anomalyActionFrequency,
+    };
+    return actionMap[anomaly.type] ?? 'alert';
   }
 
   /**

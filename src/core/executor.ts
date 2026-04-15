@@ -5,6 +5,7 @@ import { ClobClientWrapper, getClobClient } from '../api/clob-client.js';
 import { fetchWithRetry } from '../utils/retry.js';
 import { RiskManager } from './risk-manager.js';
 import { Portfolio } from './portfolio.js';
+import { AnomalyDetector } from './strategy/anomaly.js';
 import { computeLiquidityMetrics, checkLiquidity } from './execution/liquidity.js';
 import * as queries from '../db/queries.js';
 import type { DetectedTrade, TradeResult, TradeReason } from '../types.js';
@@ -22,12 +23,14 @@ export class Executor {
   private authenticatedClient: AuthenticatedClobClient | null = null;
   private authFailedAt: number | null = null;
   private healthChecker?: HealthChecker;
+  private anomalyDetector: AnomalyDetector;
 
   constructor(riskManager?: RiskManager, portfolio?: Portfolio, healthChecker?: HealthChecker) {
     this.riskManager = riskManager ?? new RiskManager();
     this.portfolio = portfolio ?? new Portfolio();
     this.clobClient = getClobClient();
     this.healthChecker = healthChecker;
+    this.anomalyDetector = new AnomalyDetector();
   }
 
   /**
@@ -178,8 +181,29 @@ export class Executor {
       return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0, riskCheck.reason);
     }
 
+    // 2a. Anomaly detection
+    const anomaly = this.anomalyDetector.analyze(trade);
+    let anomalyReduceFactor: number | undefined;
+
+    if (anomaly) {
+      const action = this.anomalyDetector.getActionForAnomaly(anomaly);
+      log.warn({ type: anomaly.type, action, trader: trade.traderName }, 'Anomaly detected');
+
+      if (action === 'skip_trade') {
+        return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0, `anomaly:${anomaly.type}`);
+      }
+      if (action === 'halt_trader') {
+        queries.haltTrader(trade.traderAddress, config.anomalyHaltDurationHours);
+        return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0, `anomaly:halt:${anomaly.type}`);
+      }
+      if (action === 'reduce_size') {
+        anomalyReduceFactor = config.anomalyReduceFactor;
+      }
+      // 'alert' / 'ignore' → continue (alert already logged by analyze())
+    }
+
     try {
-      // 2. Get current price from CLOB (attempt order book fetch for liquidity check too)
+      // 2b. Get current price from CLOB (attempt order book fetch for liquidity check too)
       let midpoint: number;
       let liquidityChecked = false;
       let totalUsd = this.computeBetSize(trade.usdValue);
@@ -230,11 +254,51 @@ export class Executor {
         return this.createResult(trade, 'BUY', 'skipped', midpoint, 0, 0, slippageCheck.reason);
       }
 
-      // 4. Calculate size — proportional to trader's USD when configured.
+      // 4a. Probation multiplier
+      const traderRec = queries.getTraderByAddress(trade.traderAddress);
+      if (traderRec?.probation) {
+        const originalUsd = totalUsd;
+        totalUsd *= config.probationSizeMultiplier;
+        log.info({
+          trader: trade.traderName,
+          multiplier: config.probationSizeMultiplier,
+          originalUsd: originalUsd.toFixed(2),
+          adjustedUsd: totalUsd.toFixed(2),
+        }, 'Probation: reduced bet size');
+      }
+
+      // 4b. Anomaly reduce_size factor
+      if (anomalyReduceFactor !== undefined) {
+        const originalUsd = totalUsd;
+        totalUsd *= anomalyReduceFactor;
+        log.info({
+          trader: trade.traderName,
+          anomalyReduceFactor,
+          originalUsd: originalUsd.toFixed(2),
+          adjustedUsd: totalUsd.toFixed(2),
+        }, 'Anomaly: reduced bet size');
+      }
+
+      // 4c. Concentration check
+      const allPositions = this.portfolio.getAllPositions();
+      const demoBalance = queries.getDemoBalance();
+      const equity = demoBalance + allPositions.reduce((s, p) => {
+        const mtm = p.currentPrice !== null && p.currentPrice !== undefined
+          ? p.totalShares * p.currentPrice
+          : p.totalInvested;
+        return s + mtm;
+      }, 0);
+      const concCheck = this.riskManager.checkConcentration(trade, allPositions, equity);
+      if (!concCheck.allowed) {
+        log.warn({ reason: concCheck.reason }, 'Concentration check FAILED');
+        return this.createResult(trade, 'BUY', 'skipped', midpoint, 0, 0, concCheck.reason);
+      }
+
+      // 5. Calculate size — proportional to trader's USD when configured.
       // Note: totalUsd may already be adjusted by liquidity check above
       const size = totalUsd / midpoint;
 
-      // 5. Execute or simulate
+      // 6. Execute or simulate
       if (config.dryRun) {
         const commission = totalUsd * (config.demoCommissionPct / 100);
         const demoBalance = queries.getDemoBalance();
@@ -602,6 +666,21 @@ export class Executor {
    * Process a detected trade (route to buy or sell)
    */
   async processTrade(trade: DetectedTrade): Promise<TradeResult> {
+    // If trader is halted due to anomaly, skip new BUYs (SELLs still allowed).
+    if (trade.action === 'buy' && queries.isTraderHalted(trade.traderAddress)) {
+      log.info(
+        { trader: trade.traderName, market: trade.marketTitle },
+        'Skipping BUY: trader halted (anomaly)',
+      );
+      const halted = this.createResult(trade, 'BUY', 'skipped', 0, 0, 0, 'Trader halted (anomaly)');
+      try {
+        queries.insertTrade(halted);
+      } catch (err) {
+        log.error({ err }, 'Failed to persist halted-trader skipped trade');
+      }
+      return halted;
+    }
+
     // If trader is in exit-only mode, ignore their BUY signals but still allow
     // SELLs (so we can exit positions they originally opened).
     if (trade.action === 'buy') {

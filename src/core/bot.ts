@@ -10,6 +10,8 @@ import { MarketResolver } from './strategy/market-resolver.js';
 import { StopLossMonitor } from './stop-loss-monitor.js';
 import { HealthChecker } from './health-checker.js';
 import { TradeQueue } from './execution/trade-queue.js';
+import { TraderRotation } from './strategy/rotation.js';
+import { PerformanceTracker } from './strategy/performance.js';
 import { ClobClientWrapper } from '../api/clob-client.js';
 import { DataApi } from '../api/data-api.js';
 import { broadcastEvent } from '../dashboard/routes/sse.js';
@@ -30,6 +32,7 @@ export class Bot {
   private stopLossMonitor: StopLossMonitor;
   private healthChecker: HealthChecker;
   private tradeQueue: TradeQueue;
+  private rotation: TraderRotation;
 
   private status: BotStatus = 'idle';
   private startTime: number | null = null;
@@ -38,6 +41,7 @@ export class Bot {
   private stopLossQueueTimer: ReturnType<typeof setInterval> | null = null;
   private mtmTimer: ReturnType<typeof setInterval> | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private rotationTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.leaderboard = new Leaderboard();
@@ -50,6 +54,7 @@ export class Bot {
     this.marketResolver = new MarketResolver(new ClobClientWrapper(), new DataApi());
     this.stopLossMonitor = new StopLossMonitor();
     this.tradeQueue = new TradeQueue((trade) => this.handleNewTrade(trade));
+    this.rotation = new TraderRotation(this.leaderboard, new PerformanceTracker());
 
     // Wire tracker events through the trade queue
     this.tracker.on('newTrade', (trade: DetectedTrade) => this.tradeQueue.enqueue(trade));
@@ -134,6 +139,22 @@ export class Bot {
         }
       }, config.leaderRefreshIntervalMs);
 
+      // 4b. Schedule trader rotation (if configured)
+      const rotationMs = config.traderRotationIntervalHours * 3600 * 1000;
+      if (rotationMs > 0) {
+        this.rotationTimer = setInterval(async () => {
+          try {
+            const result = await this.rotation.rotateTraders();
+            if (result.dropped.length > 0 || result.added.length > 0) {
+              this.tracker.initialize(queries.getTrackedForPolling());
+              log.info({ dropped: result.dropped.length, added: result.added.length }, 'Rotation cycle done');
+            }
+          } catch (err) {
+            log.error({ err }, 'Rotation failed');
+          }
+        }, rotationMs);
+      }
+
       // 5. Schedule PnL snapshots (every 5 min)
       this.pnlSnapshotTimer = setInterval(() => {
         this.savePnlSnapshot();
@@ -209,6 +230,10 @@ export class Bot {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
       this.healthCheckTimer = null;
+    }
+    if (this.rotationTimer) {
+      clearInterval(this.rotationTimer);
+      this.rotationTimer = null;
     }
 
     this.tradeQueue.drain();
@@ -325,6 +350,14 @@ export class Bot {
         price: result.price,
         size: result.size,
       }, 'Trade processed');
+
+      // Probation countdown for successful BUYs
+      if (
+        trade.action === 'buy' &&
+        (result.status === 'simulated' || result.status === 'filled')
+      ) {
+        this.rotation.handleProbationTrade(trade.traderAddress, result);
+      }
 
       // If this was a SELL from an exit-only trader, they may now have zero
       // open positions remaining — fully deactivate and drop from polling.

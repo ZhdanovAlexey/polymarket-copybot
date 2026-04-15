@@ -3,7 +3,7 @@ import { config } from '../../config.js';
 import { Leaderboard } from '../leaderboard.js';
 import { PerformanceTracker } from './performance.js';
 import * as queries from '../../db/queries.js';
-import type { TrackedTrader } from '../../types.js';
+import type { TrackedTrader, TradeResult } from '../../types.js';
 
 const log = createLogger('rotation');
 
@@ -58,7 +58,7 @@ export class TraderRotation {
       const { drop, reason } = this.performance.shouldDrop(trader.address);
       if (drop) {
         log.info({ address: trader.address, name: trader.name, reason }, 'Dropping underperforming trader');
-        queries.deactivateTrader(trader.address);
+        queries.setExitOnly(trader.address);
         dropped.push(trader.address);
         queries.insertRotation(trader.address, null, reason || 'Underperformance');
       }
@@ -76,6 +76,12 @@ export class TraderRotation {
       for (const candidate of freshTraders) {
         if (added.length >= slotsAvailable) break;
         if (activeAddresses.has(candidate.address)) continue;
+
+        // Skip blacklisted candidates
+        if (queries.isBlacklisted(candidate.address)) {
+          log.info({ candidate: candidate.name }, 'Skipped: trader blacklisted');
+          continue;
+        }
 
         // New trader starts in probation
         const probationTrader: TrackedTrader = {
@@ -129,6 +135,55 @@ export class TraderRotation {
     );
 
     return false;
+  }
+
+  /**
+   * Handle probation countdown after a successful BUY trade.
+   * Decrements probationTradesLeft; when it reaches 0, evaluates P&L:
+   *  - P&L >= 0 → graduate (probation cleared)
+   *  - P&L <  0 → exit-only + blacklist for blacklistDays
+   */
+  handleProbationTrade(traderAddress: string, _result: TradeResult): void {
+    const trader = queries.getTraderByAddress(traderAddress);
+    if (!trader?.probation) return;
+
+    const remaining = (trader.probationTradesLeft ?? 0) - 1;
+
+    if (remaining > 0) {
+      queries.updateTraderProbationTradesLeft(traderAddress, remaining);
+      log.info({ trader: trader.name, remaining }, 'Probation trade counted');
+      return;
+    }
+
+    // Probation period complete — evaluate P&L
+    // Use addedAt timestamp (ISO string → unix seconds) if available, else 7 days ago
+    const addedAtRaw = trader.addedAt;
+    const probationStartTs = addedAtRaw
+      ? Math.floor(new Date(addedAtRaw).getTime() / 1000)
+      : Math.floor(Date.now() / 1000) - 7 * 86400;
+
+    const stats = this.performance.getTraderStatsSince(traderAddress, probationStartTs)
+      ?? this.performance.getTraderStats(traderAddress);
+    const totalPnl = stats?.totalPnl ?? 0;
+
+    if (totalPnl >= 0) {
+      queries.graduateFromProbation(traderAddress);
+      queries.insertActivity(
+        'probation',
+        `${trader.name} graduated from probation (P&L $${totalPnl.toFixed(2)})`,
+      );
+      queries.insertRotation(null, traderAddress, `Graduated from probation (P&L $${totalPnl.toFixed(2)})`);
+      log.info({ trader: trader.name, pnl: totalPnl }, 'Probation: graduated');
+    } else {
+      queries.setExitOnly(traderAddress);
+      queries.addToBlacklist(traderAddress, 'Failed probation', config.blacklistDays);
+      queries.insertActivity(
+        'probation',
+        `${trader.name} failed probation (P&L $${totalPnl.toFixed(2)}), blacklisted ${config.blacklistDays}d`,
+      );
+      queries.insertRotation(traderAddress, null, `Failed probation (P&L $${totalPnl.toFixed(2)}), blacklisted ${config.blacklistDays}d`);
+      log.warn({ trader: trader.name, pnl: totalPnl }, 'Probation: failed, blacklisted');
+    }
   }
 
   /**

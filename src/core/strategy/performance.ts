@@ -47,6 +47,13 @@ export class PerformanceTracker {
   }
 
   /**
+   * Get performance stats for a trader since a given unix timestamp (seconds)
+   */
+  getTraderStatsSince(traderAddress: string, sinceTs: number): TraderPerformance | undefined {
+    return queries.getPerformanceByTraderSince(traderAddress, sinceTs);
+  }
+
+  /**
    * Get all trader performance rankings
    */
   getAllStats(): TraderPerformance[] {

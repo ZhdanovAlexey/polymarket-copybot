@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import * as queries from '../db/queries.js';
-import type { DetectedTrade, RiskCheckResult } from '../types.js';
+import type { DetectedTrade, RiskCheckResult, BotPosition } from '../types.js';
 
 const log = createLogger('risk-manager');
 
@@ -67,6 +67,59 @@ export class RiskManager {
     const positions = queries.getAllOpenPositions();
     if (positions.length >= config.maxOpenPositions) {
       return { allowed: false, reason: `Max positions (${config.maxOpenPositions}) reached` };
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * Check concentration limits: max positions per market and max token exposure.
+   */
+  checkConcentration(
+    trade: DetectedTrade,
+    positions: BotPosition[],
+    equity: number,
+  ): RiskCheckResult {
+    const marketCheck = this.checkMarketConcentration(trade.conditionId, positions);
+    if (!marketCheck.allowed) return marketCheck;
+
+    const tokenCheck = this.checkTokenExposure(trade.tokenId, trade.usdValue || 0, positions, equity);
+    if (!tokenCheck.allowed) return tokenCheck;
+
+    // TODO Phase 5+: event-level concentration via negRiskMarketId from markets_cache
+    return { allowed: true };
+  }
+
+  private checkMarketConcentration(conditionId: string, positions: BotPosition[]): RiskCheckResult {
+    const sameMarket = positions.filter((p) => p.conditionId === conditionId && p.status === 'open');
+    if (sameMarket.length >= config.maxPositionsPerMarket) {
+      return {
+        allowed: false,
+        reason: `Max ${config.maxPositionsPerMarket} positions per market reached`,
+      };
+    }
+    return { allowed: true };
+  }
+
+  private checkTokenExposure(
+    tokenId: string,
+    tradeUsd: number,
+    positions: BotPosition[],
+    equity: number,
+  ): RiskCheckResult {
+    const existing = positions.filter((p) => p.tokenId === tokenId && p.status === 'open');
+    const existingUsd = existing.reduce((s, p) => {
+      const mtm =
+        p.currentPrice !== null && p.currentPrice !== undefined
+          ? p.totalShares * p.currentPrice
+          : p.totalInvested;
+      return s + mtm;
+    }, 0);
+    const maxUsd = equity * (config.maxExposurePerTokenPct / 100);
+    if (existingUsd + tradeUsd > maxUsd) {
+      return {
+        allowed: false,
+        reason: `Token exposure $${(existingUsd + tradeUsd).toFixed(0)} exceeds ${config.maxExposurePerTokenPct}% of equity ($${maxUsd.toFixed(0)})`,
+      };
     }
     return { allowed: true };
   }
