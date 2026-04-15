@@ -1,6 +1,6 @@
 # STATUS — PolyMarket CopyBot PRO
 
-> Last updated: 2026-04-12
+> Last updated: 2026-04-15
 
 ---
 
@@ -12,6 +12,15 @@ All 12 stages implemented. 40 source files, ~16.5k lines. TypeScript compiles wi
 ---
 
 ## Recent Changes
+
+- **Comprehensive strategy upgrade (Phases 1–7, branch `feature/strategy-upgrade`)**: 7-phase upgrade adding production-grade risk management, execution intelligence, and selection quality. Manual testing required. Key additions:
+  - **Phase 1 — Foundation**: 10 new DB tables (stop_loss_events, drawdown_events, health_events, backfill_jobs, twap_orders, conviction_scores, exit_signals, rotation_log, trader_metrics, anomaly_events). 35 new config fields. Extended types.ts and queries.ts.
+  - **Phase 2 — Market Resolver**: `market-resolver.ts` — computes realized win rate per trader via CLOB market resolution; background backfill on bot start; `rescoreWithRealWinRates` updates leaderboard scores in-place.
+  - **Phase 3 — Risk foundation**: `stop-loss-monitor.ts` (fixed + trailing, anti-cascade), `execution/liquidity.ts` (depth fetch, adaptive slippage, spread guard), `health-checker.ts` (CLOB ping, circuit breaker halt/resume), `execution/trade-queue.ts` (concurrency limit, stale TTL, dedup).
+  - **Phase 4 — Rotation, probation, concentration, anomaly**: `rotation.ts` extended with probation period + blacklist. `risk-manager.ts` extended with concentration checks (per-market, per-token, per-event). `anomaly.ts` extended with configurable actions (ignore/alert/reduce_size/skip_trade/halt_trader).
+  - **Phase 5 — Conviction, exit strategies, TWAP, market age**: `conviction-store.ts` + `conviction.ts` — per-market conviction scoring influencing bet size. `exit-strategy.ts` — take-profit and partial scale-out exit signals via Portfolio events. `execution/twap.ts` — TWAP slicing with drift guard + resume on restart. Market age factor F5 in leaderboard scoring.
+  - **Phase 6 — Adaptive weights, rolling drawdown, correlation, auto-optimizer**: `adaptive-weights.ts` — EWMA-based rolling recalculation of leaderboard scoring weights. `drawdown-monitor.ts` — rolling DD window with adaptive threshold and pause/unpause. `correlation.ts` — pairwise correlation filter to avoid correlated position concentration. `auto-optimizer.ts` — periodic parameter optimization with improvement threshold guard.
+  - **Phase 7 — WebSocket skeleton**: `src/api/websocket-client.ts` — `PolymarketWsClient` EventEmitter-based WS client with auto-reconnect. NOT wired into trade tracking (Polymarket has no public user-activity WS). `Tracker.startWebSocket()` stub logs notice and falls back to polling. Infrastructure ready for future WS endpoints.
 
 - **Proportional bet sizing**: `executor.executeBuy` теперь не всегда копирует фиксированный `betSizeUsd`, а масштабирует под размер ставки трейдера: `our_usd = betSize × clamp(trader_usd / anchor, minMul, maxMul)`. Новые настройки `bet_sizing_mode` (`fixed` | `proportional`, дефолт proportional), `bet_scale_anchor_usd` (100), `bet_scale_min_mul` (1), `bet_scale_max_mul` (5). При mode=fixed или если `usdValue` API не вернул — фолбэк на базовую сумму. В DRY RUN log'ах добавлены поля `traderUsd` и `mul` для прозрачности. UI-поля в Settings → Trading. Top-up'ы трейдера продолжают копироваться каждый по своей логике sizing'а (сознательное решение: top-up = сигнал уверенности).
 - **Demo Auto-Redeem for resolved markets**: раньше в demo-mode позиции резолвнутых маркетов висели бесконечно — `redeemer.ts` читал `wallet_address` из settings, а в demo он не ставится → early return. Теперь `Redeemer.checkAndRedeem()` ветвится: в dry-run вызывает новый `checkAndRedeemDemo()`, который для каждой open-позиции бьёт в CLOB `/markets/{conditionId}`. Если `closed=true` — берём `tokens[].winner` флаг для нашего `tokenId`: winner → `payout = shares * $1` в демо-баланс + позиция `status='redeemed'` + запись в Trade Log `side='REDEEM'` / `status='simulated'` + activity-log + SSE-broadcast. Новый `queries.markPositionRedeemed` + `queries.getOpeningTraderForToken` (для атрибуции redeem-трейда к FK tracked_traders). UI: бирюзовый цвет для `REDEEM` в trade log и live feed. Первый скан на 184 позиции закрыл 44 (demo balance +$3,631).
@@ -133,7 +142,7 @@ All 12 stages implemented. 40 source files, ~16.5k lines. TypeScript compiles wi
 ## TODO — Known Improvements
 
 - [ ] Frontend: backtest.js page (form + results UI) — API exists, no dedicated frontend page
-- [ ] WebSocket real-time tracking (optional, polling works fine)
+- [x] WebSocket client skeleton implemented (`src/api/websocket-client.ts`); full user-activity WS blocked by Polymarket API limitations
 - [ ] Unit/integration tests (vitest)
 - [ ] Data API response field mapping validation (field names may differ from spec)
 - [ ] Rate limiting tuning for Data API polling (currently 500ms between traders)

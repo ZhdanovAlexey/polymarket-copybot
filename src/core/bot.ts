@@ -136,6 +136,13 @@ export class Bot {
       this.reconcileDroppedTraders(traders);
 
       // 2b. Initialize tracker with active + exit-only traders
+      // Note: useWebSocket=true requests WS mode, but Polymarket has no public
+      // user-activity WS endpoint — polling remains the backbone in all cases.
+      if (config.useWebSocket) {
+        log.info(
+          'WebSocket mode requested — Polymarket does not have a public user-activity WS; using polling',
+        );
+      }
       try {
         this.tracker.initialize(queries.getTrackedForPolling());
         this.tracker.startPolling();

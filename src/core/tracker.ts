@@ -171,6 +171,20 @@ export class Tracker extends EventEmitter {
   }
 
   /**
+   * WebSocket mode stub.
+   * Polymarket does not provide a public WebSocket feed for user activity,
+   * so this method logs a notice and falls back to polling automatically.
+   * Reserved for forward-compatibility when/if such an endpoint becomes
+   * available.
+   */
+  startWebSocket(): void {
+    log.info(
+      'Polymarket WS user-activity not supported — falling back to polling',
+    );
+    this.startPolling();
+  }
+
+  /**
    * Stop polling
    */
   stopPolling(): void {

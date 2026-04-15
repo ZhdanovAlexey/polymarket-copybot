@@ -5,7 +5,8 @@ All code is implemented (12 stages, 40 source files, ~16.5k lines TS/JS). TypeSc
 **What remains:** manual testing and verification. See `STATUS.md` for the full TODO checklist.
 Demo account (paper trading) mode implemented: virtual balance, commission tracking, reset, live prices.
 Settings hot-reload without server restart. Polymarket API v1 migration complete.
-Known improvements: backtest frontend page, WebSocket support, unit tests.
+Comprehensive strategy upgrade complete (Phases 1–7): 10 new DB tables, 35 new config fields, market resolver, stop-loss, drawdown, health check, trade queue, TWAP, liquidity depth, conviction store, exit strategies, adaptive weights, correlation filter, auto-optimizer, WS skeleton.
+Known improvements: backtest frontend page, unit tests.
 
 ## How to start working
 1. Read `STATUS.md` — it has a TODO checklist of what needs testing/fixing
@@ -57,11 +58,20 @@ pnpm start        # Run compiled JS (production)
 - `src/api/gamma-api.ts` — GammaApi class (public, no auth)
 - `src/api/clob-client.ts` — ClobClientWrapper (public) + `initClobClientWithAuth()` (ethers v5 wallet → ClobClient)
 
-**Strategy:** `src/core/strategy/` — performance.ts, rotation.ts, backtest.ts, optimizer.ts, anomaly.ts
+**Strategy:** `src/core/strategy/` — performance.ts, rotation.ts, backtest.ts, optimizer.ts, anomaly.ts, market-resolver.ts, conviction.ts, conviction-store.ts, exit-strategy.ts, adaptive-weights.ts, correlation.ts, auto-optimizer.ts
+
+**Risk / execution modules (Phase 1–7 additions):**
+- `src/core/stop-loss-monitor.ts` — fixed + trailing stop-loss, anti-cascade lock, queue-based SELL dispatch
+- `src/core/drawdown-monitor.ts` — rolling drawdown window (EWMA-adaptive), pause/unpause bot
+- `src/core/health-checker.ts` — CLOB ping, auth-failure circuit breaker, halt/resume
+- `src/core/execution/trade-queue.ts` — concurrency-limited queue, stale-trade TTL, dedup
+- `src/core/execution/twap.ts` — TWAP slicing with drift guard, resume on restart
+- `src/core/execution/liquidity.ts` — order-book depth fetch, adaptive slippage, spread check
+- `src/api/websocket-client.ts` — `PolymarketWsClient`: EventEmitter WS skeleton (connect/disconnect/subscribe, auto-reconnect). NOT wired into Tracker — Polymarket has no public user-activity WS; polling remains the backbone. Infrastructure for future use.
 
 **Dashboard:** `src/dashboard/server.ts` → routes: api.ts, auth.ts, sse.ts, backtest.ts, export.ts. Frontend: `public/` with index.html + CSS + 7 JS modules.
 
-**DB:** `src/db/` — database.ts (singleton), migrations.ts (10 tables), queries.ts (typed wrappers for all tables)
+**DB:** `src/db/` — database.ts (singleton), migrations.ts (20 tables, +10 added in Phase 1), queries.ts (typed wrappers for all tables)
 
 ## Conventions
 - ESM: `import`/`export`, `.js` extensions in all TS imports
