@@ -215,20 +215,34 @@ export class ClobClientWrapper {
     }
   }
 
-  // Helper: get best bid price from order book
+  // Best bid = highest bid price. Polymarket CLOB returns bids sorted ASC
+  // (worst first), so book.bids[0] would be the lowest bid (e.g. $0.01).
+  // Iterate all levels and pick max.
   getBestBid(book: OrderBookResponse): number | null {
     if (book.bids.length === 0) {
       return null;
     }
-    return parseFloat(book.bids[0].price);
+    let max = -Infinity;
+    for (const level of book.bids) {
+      const p = parseFloat(level.price);
+      if (Number.isFinite(p) && p > max) max = p;
+    }
+    return max === -Infinity ? null : max;
   }
 
-  // Helper: get best ask price from order book
+  // Best ask = lowest ask price. Polymarket CLOB returns asks sorted DESC
+  // (worst first), so book.asks[0] would be the highest ask. Iterate and
+  // pick min positive price.
   getBestAsk(book: OrderBookResponse): number | null {
     if (book.asks.length === 0) {
       return null;
     }
-    return parseFloat(book.asks[0].price);
+    let min = Infinity;
+    for (const level of book.asks) {
+      const p = parseFloat(level.price);
+      if (Number.isFinite(p) && p > 0 && p < min) min = p;
+    }
+    return min === Infinity ? null : min;
   }
 }
 

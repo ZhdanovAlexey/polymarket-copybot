@@ -3,17 +3,29 @@ import type { LiquidityMetrics, LiquidityCheckResult, OrderBookResponse } from '
 /**
  * Compute liquidity metrics from an order book snapshot.
  *
- * Polymarket CLOB book format:
- *   bids[0] = best bid (highest price, sorted DESC)
- *   asks[0] = best ask (lowest price, sorted ASC)
+ * Polymarket CLOB returns:
+ *   bids: ASC by price (worst first) — book.bids[last] is best bid (highest)
+ *   asks: DESC by price (worst first) — book.asks[last] is best ask (lowest)
  *   each entry: { price: string, size: string }
+ *
+ * We sort locally to be robust regardless of server order.
  */
 export function computeLiquidityMetrics(
   book: OrderBookResponse,
   depthSlippagePct: number,
 ): LiquidityMetrics {
-  const bid = book.bids.length > 0 ? parseFloat(book.bids[0].price) : 0;
-  const ask = book.asks.length > 0 ? parseFloat(book.asks[0].price) : 0;
+  // Sort locally so index 0 is always best.
+  const bidsSortedDesc = [...book.bids]
+    .map((l) => ({ price: parseFloat(l.price), size: parseFloat(l.size) }))
+    .filter((l) => Number.isFinite(l.price) && l.price > 0 && Number.isFinite(l.size))
+    .sort((a, b) => b.price - a.price); // highest first
+  const asksSortedAsc = [...book.asks]
+    .map((l) => ({ price: parseFloat(l.price), size: parseFloat(l.size) }))
+    .filter((l) => Number.isFinite(l.price) && l.price > 0 && Number.isFinite(l.size))
+    .sort((a, b) => a.price - b.price); // lowest first
+
+  const bid = bidsSortedDesc.length > 0 ? bidsSortedDesc[0].price : 0;
+  const ask = asksSortedAsc.length > 0 ? asksSortedAsc[0].price : 0;
 
   // Midpoint
   const midpoint = bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask;
@@ -22,29 +34,23 @@ export function computeLiquidityMetrics(
   const spreadPct =
     midpoint > 0 && bid > 0 && ask > 0 ? ((ask - bid) / midpoint) * 100 : 999;
 
-  // Depth at N% from midpoint (summed ask-side USD within slippage band)
-  // Summing size * price for each ask level where price <= midpoint * (1 + pct/100)
+  // Depth at N% from midpoint: sum USD on ask-side up to midpoint*(1+pct)
+  // and bid-side down to midpoint*(1-pct).
   const ceiling = midpoint * (1 + depthSlippagePct / 100);
   let depthAt2pct = 0;
-  for (const level of book.asks) {
-    const p = parseFloat(level.price);
-    const s = parseFloat(level.size);
-    if (p <= ceiling) {
-      depthAt2pct += p * s;
+  for (const level of asksSortedAsc) {
+    if (level.price <= ceiling) {
+      depthAt2pct += level.price * level.size;
     } else {
-      break; // asks are sorted ASC, no need to continue
+      break; // sorted ASC — further entries are even higher
     }
   }
-
-  // Also include bid-side depth within the band (below midpoint)
   const floor = midpoint * (1 - depthSlippagePct / 100);
-  for (const level of book.bids) {
-    const p = parseFloat(level.price);
-    const s = parseFloat(level.size);
-    if (p >= floor) {
-      depthAt2pct += p * s;
+  for (const level of bidsSortedDesc) {
+    if (level.price >= floor) {
+      depthAt2pct += level.price * level.size;
     } else {
-      break; // bids sorted DESC
+      break; // sorted DESC — further entries are even lower
     }
   }
 
