@@ -34,23 +34,21 @@ export function computeLiquidityMetrics(
   const spreadPct =
     midpoint > 0 && bid > 0 && ask > 0 ? ((ask - bid) / midpoint) * 100 : 999;
 
-  // Depth at N% from midpoint: sum USD on ask-side up to midpoint*(1+pct)
-  // and bid-side down to midpoint*(1-pct).
-  const ceiling = midpoint * (1 + depthSlippagePct / 100);
+  // Depth available within slippage window.
+  // IMPORTANT: we measure relative to each side's BEST price, not midpoint.
+  // Measuring relative to midpoint breaks when spread > window (e.g. spread
+  // 4% with ±2% window → best bid/ask themselves fall outside, depth=0).
+  // For a BUY we care about ask-side (we're lifting offers); for a SELL we
+  // care about bid-side. Since checkLiquidity() is currently only used on
+  // the BUY path, depth here = ask-side up to best_ask × (1 + pct/100).
+  // We still compute bid-side for symmetry / informational purposes.
+  const askCeiling = ask > 0 ? ask * (1 + depthSlippagePct / 100) : 0;
   let depthAt2pct = 0;
   for (const level of asksSortedAsc) {
-    if (level.price <= ceiling) {
+    if (level.price <= askCeiling) {
       depthAt2pct += level.price * level.size;
     } else {
-      break; // sorted ASC — further entries are even higher
-    }
-  }
-  const floor = midpoint * (1 - depthSlippagePct / 100);
-  for (const level of bidsSortedDesc) {
-    if (level.price >= floor) {
-      depthAt2pct += level.price * level.size;
-    } else {
-      break; // sorted DESC — further entries are even lower
+      break;
     }
   }
 
