@@ -527,6 +527,86 @@ a:hover {
   cursor: not-allowed;
 }
 
+.trader-detail-row td {
+  background: var(--bg-tertiary);
+}
+
+.detail-scroll-wrap {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.detail-subtable {
+  border-collapse: collapse;
+}
+
+.detail-subtable th {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.detail-subtable td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.trader-name-cell {
+  font-weight: 600;
+}
+
+.trader-profile-link {
+  font-size: 0.72rem;
+  opacity: 0.5;
+  margin-left: 4px;
+  text-decoration: none;
+}
+
+.trader-profile-link:hover {
+  opacity: 1;
+}
+
+.trader-pause-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.trader-pause-btn:hover:not(:disabled) {
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent-blue);
+}
+
+.trader-pause-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.position-detail-row > td {
+  padding: 0 0 0 24px !important;
+  background: var(--bg-secondary);
+  border-top: none;
+}
+
+tr[data-token-id].expanded > td:first-child::before {
+  content: '\25BE';
+  margin-right: 6px;
+  font-size: 0.8em;
+}
+
 /* --- Live Feed --- */
 #live-feed {
   max-height: 320px;
