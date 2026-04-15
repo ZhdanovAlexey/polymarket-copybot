@@ -9,6 +9,15 @@ import type {
   BacktestResult,
   BacktestConfig,
   AnomalyAlert,
+  MarketResolution,
+  BackfillJob,
+  ScoringWeights,
+  ScoringWeightsRow,
+  ConvictionParamsRow,
+  TwapOrder,
+  MarketCache,
+  EquitySnapshot,
+  TraderBlacklistEntry,
 } from '../types.js';
 
 // ============================================================
@@ -170,6 +179,10 @@ function mapTraderRow(row: Record<string, unknown>): TrackedTrader {
     exitOnly: (row.exit_only as number) === 1,
     probation: (row.probation as number) === 1,
     probationTradesLeft: row.probation_trades_left as number,
+    haltedUntil: row.halted_until !== undefined ? (row.halted_until as number) : undefined,
+    realizedWinRate: row.realized_win_rate !== undefined ? (row.realized_win_rate as number | null) : undefined,
+    resolvedTradesCount: row.resolved_trades_count !== undefined ? (row.resolved_trades_count as number) : undefined,
+    confidence: row.confidence !== undefined ? (row.confidence as number) : undefined,
   };
 }
 
@@ -270,6 +283,7 @@ function mapTradeRow(row: Record<string, unknown>): TradeResult {
     originalTraderPrice: row.original_trader_price as number,
     isDryRun: (row.is_dry_run as number) === 1,
     commission: (row.commission as number) ?? 0,
+    reason: row.reason !== undefined && row.reason !== null ? (row.reason as TradeResult['reason']) : undefined,
   };
 }
 
@@ -411,6 +425,11 @@ function mapPositionRow(row: Record<string, unknown>): BotPosition {
     totalInvested: row.total_invested as number,
     openedAt: row.opened_at as string,
     status: row.status as BotPosition['status'],
+    highPrice: row.high_price !== undefined ? (row.high_price as number | null) : undefined,
+    highPriceUpdatedAt: row.high_price_updated_at !== undefined ? (row.high_price_updated_at as number) : undefined,
+    stopLossPrice: row.stop_loss_price !== undefined ? (row.stop_loss_price as number | null) : undefined,
+    trailingStopPrice: row.trailing_stop_price !== undefined ? (row.trailing_stop_price as number | null) : undefined,
+    scaledOut: row.scaled_out !== undefined ? (row.scaled_out as number) === 1 : undefined,
   };
 }
 
@@ -767,4 +786,638 @@ export function getAnomalies(options?: {
     message: row.message as string,
     timestamp: row.timestamp as string,
   }));
+}
+
+// ============================================================
+// Market Resolutions
+// ============================================================
+
+function mapMarketResolutionRow(row: Record<string, unknown>): MarketResolution {
+  return {
+    conditionId: row.condition_id as string,
+    winnerTokenId: (row.winner_token_id as string | null) ?? null,
+    resolvedAt: (row.resolved_at as number | null) ?? null,
+    marketTitle: (row.market_title as string) ?? '',
+    fetchedAt: row.fetched_at as number,
+    status: row.status as MarketResolution['status'],
+  };
+}
+
+export function getMarketResolution(conditionId: string): MarketResolution | undefined {
+  const row = getDb()
+    .prepare('SELECT * FROM market_resolutions WHERE condition_id = ?')
+    .get(conditionId) as Record<string, unknown> | undefined;
+  return row ? mapMarketResolutionRow(row) : undefined;
+}
+
+export function upsertMarketResolution(res: MarketResolution): void {
+  getDb()
+    .prepare(
+      `INSERT OR REPLACE INTO market_resolutions
+         (condition_id, winner_token_id, resolved_at, market_title, fetched_at, status)
+       VALUES (@conditionId, @winnerTokenId, @resolvedAt, @marketTitle, @fetchedAt, @status)`
+    )
+    .run({
+      conditionId: res.conditionId,
+      winnerTokenId: res.winnerTokenId ?? null,
+      resolvedAt: res.resolvedAt ?? null,
+      marketTitle: res.marketTitle,
+      fetchedAt: res.fetchedAt,
+      status: res.status,
+    });
+}
+
+export function getPendingMarketResolutions(): MarketResolution[] {
+  const rows = getDb()
+    .prepare("SELECT * FROM market_resolutions WHERE status = 'pending'")
+    .all() as Array<Record<string, unknown>>;
+  return rows.map(mapMarketResolutionRow);
+}
+
+export function getResolvedMarketResolutions(conditionIds: string[]): Map<string, MarketResolution> {
+  if (conditionIds.length === 0) return new Map();
+  const placeholders = conditionIds.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM market_resolutions WHERE condition_id IN (${placeholders}) AND status = 'resolved'`
+    )
+    .all(...conditionIds) as Array<Record<string, unknown>>;
+  const result = new Map<string, MarketResolution>();
+  for (const row of rows) {
+    const mapped = mapMarketResolutionRow(row);
+    result.set(mapped.conditionId, mapped);
+  }
+  return result;
+}
+
+// ============================================================
+// Backfill Jobs
+// ============================================================
+
+function mapBackfillJobRow(row: Record<string, unknown>): BackfillJob {
+  return {
+    traderAddress: row.trader_address as string,
+    status: row.status as BackfillJob['status'],
+    marketsTotal: (row.markets_total as number) ?? 0,
+    marketsResolved: (row.markets_resolved as number) ?? 0,
+    startedAt: (row.started_at as number | null) ?? null,
+    completedAt: (row.completed_at as number | null) ?? null,
+    error: (row.error as string | null) ?? null,
+  };
+}
+
+export function upsertBackfillJob(
+  job: Partial<BackfillJob> & { traderAddress: string; status: string }
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO backfill_jobs (trader_address, status, markets_total, markets_resolved, started_at, completed_at, error)
+       VALUES (@traderAddress, @status, @marketsTotal, @marketsResolved, @startedAt, @completedAt, @error)
+       ON CONFLICT(trader_address) DO UPDATE SET
+         status = excluded.status,
+         markets_total = excluded.markets_total,
+         markets_resolved = excluded.markets_resolved,
+         started_at = COALESCE(excluded.started_at, backfill_jobs.started_at),
+         completed_at = excluded.completed_at,
+         error = excluded.error`
+    )
+    .run({
+      traderAddress: job.traderAddress,
+      status: job.status,
+      marketsTotal: job.marketsTotal ?? 0,
+      marketsResolved: job.marketsResolved ?? 0,
+      startedAt: job.startedAt ?? null,
+      completedAt: job.completedAt ?? null,
+      error: job.error ?? null,
+    });
+}
+
+export function getBackfillJob(traderAddress: string): BackfillJob | undefined {
+  const row = getDb()
+    .prepare('SELECT * FROM backfill_jobs WHERE trader_address = ?')
+    .get(traderAddress) as Record<string, unknown> | undefined;
+  return row ? mapBackfillJobRow(row) : undefined;
+}
+
+export function getAllBackfillJobs(): BackfillJob[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM backfill_jobs ORDER BY started_at DESC')
+    .all() as Array<Record<string, unknown>>;
+  return rows.map(mapBackfillJobRow);
+}
+
+// ============================================================
+// Scoring Weights
+// ============================================================
+
+export function insertScoringWeights(weights: ScoringWeights & { source: string }): void {
+  getDb()
+    .prepare(
+      `INSERT INTO scoring_weights (roi_w, freq_w, wr_w, cons_w, size_w, source)
+       VALUES (@roi, @frequency, @winRate, @consistency, @sizeProximity, @source)`
+    )
+    .run({
+      roi: weights.roi,
+      frequency: weights.frequency,
+      winRate: weights.winRate,
+      consistency: weights.consistency,
+      sizeProximity: weights.sizeProximity,
+      source: weights.source,
+    });
+}
+
+function mapScoringWeightsRow(row: Record<string, unknown>): ScoringWeightsRow {
+  return {
+    id: row.id as number,
+    timestamp: row.timestamp as string,
+    source: row.source as ScoringWeightsRow['source'],
+    roi: row.roi_w as number,
+    frequency: row.freq_w as number,
+    winRate: row.wr_w as number,
+    consistency: row.cons_w as number,
+    sizeProximity: row.size_w as number,
+  };
+}
+
+export function getLatestScoringWeights(): ScoringWeightsRow | undefined {
+  const row = getDb()
+    .prepare('SELECT * FROM scoring_weights ORDER BY id DESC LIMIT 1')
+    .get() as Record<string, unknown> | undefined;
+  return row ? mapScoringWeightsRow(row) : undefined;
+}
+
+export function getScoringWeightsHistory(limit: number): ScoringWeightsRow[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM scoring_weights ORDER BY id DESC LIMIT ?')
+    .all(limit) as Array<Record<string, unknown>>;
+  return rows.map(mapScoringWeightsRow);
+}
+
+// ============================================================
+// Trader Correlations
+// ============================================================
+
+export function upsertTraderCorrelation(
+  traderA: string,
+  traderB: string,
+  correlation: number
+): void {
+  // Normalize order to avoid duplicates
+  const [a, b] = traderA < traderB ? [traderA, traderB] : [traderB, traderA];
+  getDb()
+    .prepare(
+      `INSERT INTO trader_correlations (trader_a, trader_b, correlation, computed_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(trader_a, trader_b) DO UPDATE SET
+         correlation = excluded.correlation,
+         computed_at = excluded.computed_at`
+    )
+    .run(a, b, correlation, Date.now());
+}
+
+export function getTraderCorrelation(traderA: string, traderB: string): number | undefined {
+  const [a, b] = traderA < traderB ? [traderA, traderB] : [traderB, traderA];
+  const row = getDb()
+    .prepare(
+      'SELECT correlation FROM trader_correlations WHERE trader_a = ? AND trader_b = ?'
+    )
+    .get(a, b) as { correlation: number } | undefined;
+  return row?.correlation;
+}
+
+export function getCorrelationsForTrader(
+  address: string
+): Array<{ address: string; correlation: number }> {
+  const rows = getDb()
+    .prepare(
+      `SELECT
+         CASE WHEN trader_a = ? THEN trader_b ELSE trader_a END AS address,
+         correlation
+       FROM trader_correlations
+       WHERE trader_a = ? OR trader_b = ?
+       ORDER BY correlation DESC`
+    )
+    .all(address, address, address) as Array<{ address: string; correlation: number }>;
+  return rows;
+}
+
+// ============================================================
+// Trader Blacklist
+// ============================================================
+
+export function addToBlacklist(address: string, reason: string, days: number): void {
+  const now = Date.now();
+  const expiresAt = now + days * 86400000;
+  getDb()
+    .prepare(
+      `INSERT INTO trader_blacklist (address, reason, blacklisted_at, expires_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(address) DO UPDATE SET
+         reason = excluded.reason,
+         blacklisted_at = excluded.blacklisted_at,
+         expires_at = excluded.expires_at`
+    )
+    .run(address, reason, now, expiresAt);
+}
+
+export function isBlacklisted(address: string): boolean {
+  const now = Date.now();
+  const row = getDb()
+    .prepare(
+      'SELECT 1 FROM trader_blacklist WHERE address = ? AND expires_at > ?'
+    )
+    .get(address, now) as { 1: number } | undefined;
+  return row !== undefined;
+}
+
+export function removeExpiredBlacklist(): number {
+  const now = Date.now();
+  const result = getDb()
+    .prepare('DELETE FROM trader_blacklist WHERE expires_at <= ?')
+    .run(now);
+  return result.changes;
+}
+
+export function getBlacklist(): TraderBlacklistEntry[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM trader_blacklist ORDER BY blacklisted_at DESC')
+    .all() as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    address: row.address as string,
+    reason: row.reason as string,
+    blacklistedAt: row.blacklisted_at as number,
+    expiresAt: row.expires_at as number,
+  }));
+}
+
+// ============================================================
+// Halted Traders
+// ============================================================
+
+export function haltTrader(address: string, durationHours: number): void {
+  const haltedUntil = Date.now() + durationHours * 3600000;
+  getDb()
+    .prepare(
+      'UPDATE tracked_traders SET halted_until = ? WHERE address = ?'
+    )
+    .run(haltedUntil, address);
+}
+
+export function isTraderHalted(address: string): boolean {
+  const now = Date.now();
+  const row = getDb()
+    .prepare(
+      'SELECT halted_until FROM tracked_traders WHERE address = ? AND halted_until > ?'
+    )
+    .get(address, now) as { halted_until: number } | undefined;
+  return row !== undefined;
+}
+
+export function clearHalt(address: string): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET halted_until = 0 WHERE address = ?')
+    .run(address);
+}
+
+// ============================================================
+// Equity Snapshots
+// ============================================================
+
+export function insertEquitySnapshot(equity: number, source = 'auto'): void {
+  getDb()
+    .prepare(
+      'INSERT INTO equity_snapshots (timestamp, equity_usd, source) VALUES (?, ?, ?)'
+    )
+    .run(Date.now(), equity, source);
+}
+
+export function getEquitySnapshotsSince(sinceTs: number): EquitySnapshot[] {
+  const rows = getDb()
+    .prepare(
+      'SELECT * FROM equity_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC'
+    )
+    .all(sinceTs) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: row.id as number,
+    timestamp: row.timestamp as number,
+    equityUsd: row.equity_usd as number,
+    source: row.source as string,
+  }));
+}
+
+export function getEquityPeakSince(sinceTs: number): number {
+  const row = getDb()
+    .prepare(
+      'SELECT MAX(equity_usd) AS peak FROM equity_snapshots WHERE timestamp >= ?'
+    )
+    .get(sinceTs) as { peak: number | null } | undefined;
+  return row?.peak ?? 0;
+}
+
+// ============================================================
+// Conviction Params
+// ============================================================
+
+const DEFAULT_CONVICTION_PARAMS: ConvictionParamsRow = {
+  id: 1,
+  betBase: 1.0,
+  f1Anchor: 20.0,
+  f1Max: 5.0,
+  w2: 0.3,
+  w3: 0.5,
+  f4Boost: 1.0,
+  source: 'default',
+  updatedAt: new Date().toISOString(),
+};
+
+function mapConvictionParamsRow(row: Record<string, unknown>): ConvictionParamsRow {
+  return {
+    id: row.id as number,
+    betBase: row.bet_base as number,
+    f1Anchor: row.f1_anchor as number,
+    f1Max: row.f1_max as number,
+    w2: row.w2 as number,
+    w3: row.w3 as number,
+    f4Boost: row.f4_boost as number,
+    source: row.source as ConvictionParamsRow['source'],
+    updatedAt: row.updated_at as string,
+  };
+}
+
+export function getConvictionParams(): ConvictionParamsRow {
+  const row = getDb()
+    .prepare('SELECT * FROM conviction_params WHERE id = 1')
+    .get() as Record<string, unknown> | undefined;
+  return row ? mapConvictionParamsRow(row) : { ...DEFAULT_CONVICTION_PARAMS };
+}
+
+export function updateConvictionParams(
+  params: Omit<ConvictionParamsRow, 'id' | 'updatedAt'>
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO conviction_params (id, bet_base, f1_anchor, f1_max, w2, w3, f4_boost, source, updated_at)
+       VALUES (1, @betBase, @f1Anchor, @f1Max, @w2, @w3, @f4Boost, @source, CURRENT_TIMESTAMP)
+       ON CONFLICT(id) DO UPDATE SET
+         bet_base = excluded.bet_base,
+         f1_anchor = excluded.f1_anchor,
+         f1_max = excluded.f1_max,
+         w2 = excluded.w2,
+         w3 = excluded.w3,
+         f4_boost = excluded.f4_boost,
+         source = excluded.source,
+         updated_at = CURRENT_TIMESTAMP`
+    )
+    .run({
+      betBase: params.betBase,
+      f1Anchor: params.f1Anchor,
+      f1Max: params.f1Max,
+      w2: params.w2,
+      w3: params.w3,
+      f4Boost: params.f4Boost,
+      source: params.source,
+    });
+}
+
+export function insertConvictionHistory(entry: {
+  betBase: number;
+  f1Anchor: number;
+  f1Max: number;
+  w2: number;
+  w3: number;
+  f4Boost: number;
+  source: string;
+  sharpeOld?: number;
+  sharpeNew?: number;
+  reason?: string;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO conviction_params_history
+         (bet_base, f1_anchor, f1_max, w2, w3, f4_boost, source, sharpe_old, sharpe_new, reason)
+       VALUES (@betBase, @f1Anchor, @f1Max, @w2, @w3, @f4Boost, @source, @sharpeOld, @sharpeNew, @reason)`
+    )
+    .run({
+      betBase: entry.betBase,
+      f1Anchor: entry.f1Anchor,
+      f1Max: entry.f1Max,
+      w2: entry.w2,
+      w3: entry.w3,
+      f4Boost: entry.f4Boost,
+      source: entry.source,
+      sharpeOld: entry.sharpeOld ?? null,
+      sharpeNew: entry.sharpeNew ?? null,
+      reason: entry.reason ?? null,
+    });
+}
+
+export function getConvictionHistory(limit: number): Array<{
+  id: number;
+  betBase: number;
+  f1Anchor: number;
+  f1Max: number;
+  w2: number;
+  w3: number;
+  f4Boost: number;
+  source: string;
+  sharpeOld: number | null;
+  sharpeNew: number | null;
+  appliedAt: string;
+  reason: string | null;
+}> {
+  const rows = getDb()
+    .prepare('SELECT * FROM conviction_params_history ORDER BY id DESC LIMIT ?')
+    .all(limit) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: row.id as number,
+    betBase: row.bet_base as number,
+    f1Anchor: row.f1_anchor as number,
+    f1Max: row.f1_max as number,
+    w2: row.w2 as number,
+    w3: row.w3 as number,
+    f4Boost: row.f4_boost as number,
+    source: row.source as string,
+    sharpeOld: (row.sharpe_old as number | null) ?? null,
+    sharpeNew: (row.sharpe_new as number | null) ?? null,
+    appliedAt: row.applied_at as string,
+    reason: (row.reason as string | null) ?? null,
+  }));
+}
+
+// ============================================================
+// TWAP Orders
+// ============================================================
+
+function mapTwapOrderRow(row: Record<string, unknown>): TwapOrder {
+  return {
+    id: row.id as number,
+    parentTradeId: row.parent_trade_id as string,
+    tokenId: row.token_id as string,
+    conditionId: row.condition_id as string,
+    side: row.side as TwapOrder['side'],
+    totalSlices: row.total_slices as number,
+    sliceNum: row.slice_num as number,
+    sliceUsd: row.slice_usd as number,
+    sliceSize: (row.slice_size as number | null) ?? null,
+    status: row.status as TwapOrder['status'],
+    orderId: (row.order_id as string | null) ?? null,
+    executedPrice: (row.executed_price as number | null) ?? null,
+    executedAt: (row.executed_at as string | null) ?? null,
+    initialPrice: row.initial_price as number,
+    createdAt: row.created_at as string,
+    error: (row.error as string | null) ?? null,
+  };
+}
+
+export function insertTwapSlice(slice: Omit<TwapOrder, 'id' | 'createdAt'>): number {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO twap_orders
+         (parent_trade_id, token_id, condition_id, side, total_slices, slice_num,
+          slice_usd, slice_size, status, order_id, executed_price, executed_at,
+          initial_price, error)
+       VALUES (@parentTradeId, @tokenId, @conditionId, @side, @totalSlices, @sliceNum,
+          @sliceUsd, @sliceSize, @status, @orderId, @executedPrice, @executedAt,
+          @initialPrice, @error)`
+    )
+    .run({
+      parentTradeId: slice.parentTradeId,
+      tokenId: slice.tokenId,
+      conditionId: slice.conditionId,
+      side: slice.side,
+      totalSlices: slice.totalSlices,
+      sliceNum: slice.sliceNum,
+      sliceUsd: slice.sliceUsd,
+      sliceSize: slice.sliceSize ?? null,
+      status: slice.status,
+      orderId: slice.orderId ?? null,
+      executedPrice: slice.executedPrice ?? null,
+      executedAt: slice.executedAt ?? null,
+      initialPrice: slice.initialPrice,
+      error: slice.error ?? null,
+    });
+  return result.lastInsertRowid as number;
+}
+
+export function updateTwapSlice(id: number, updates: Partial<TwapOrder>): void {
+  const setClauses: string[] = [];
+  const params: Record<string, unknown> = { id };
+
+  if (updates.status !== undefined) { setClauses.push('status = @status'); params['status'] = updates.status; }
+  if (updates.orderId !== undefined) { setClauses.push('order_id = @orderId'); params['orderId'] = updates.orderId; }
+  if (updates.executedPrice !== undefined) { setClauses.push('executed_price = @executedPrice'); params['executedPrice'] = updates.executedPrice; }
+  if (updates.executedAt !== undefined) { setClauses.push('executed_at = @executedAt'); params['executedAt'] = updates.executedAt; }
+  if (updates.sliceSize !== undefined) { setClauses.push('slice_size = @sliceSize'); params['sliceSize'] = updates.sliceSize; }
+  if (updates.error !== undefined) { setClauses.push('error = @error'); params['error'] = updates.error; }
+
+  if (setClauses.length === 0) return;
+
+  getDb()
+    .prepare(`UPDATE twap_orders SET ${setClauses.join(', ')} WHERE id = @id`)
+    .run(params);
+}
+
+export function getPendingTwapSlices(): TwapOrder[] {
+  const rows = getDb()
+    .prepare("SELECT * FROM twap_orders WHERE status IN ('pending', 'executing') ORDER BY created_at ASC")
+    .all() as Array<Record<string, unknown>>;
+  return rows.map(mapTwapOrderRow);
+}
+
+export function getTwapSlicesByParent(parentTradeId: string): TwapOrder[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM twap_orders WHERE parent_trade_id = ? ORDER BY slice_num ASC')
+    .all(parentTradeId) as Array<Record<string, unknown>>;
+  return rows.map(mapTwapOrderRow);
+}
+
+// ============================================================
+// Markets Cache
+// ============================================================
+
+function mapMarketCacheRow(row: Record<string, unknown>): MarketCache {
+  return {
+    conditionId: row.condition_id as string,
+    createdAt: (row.created_at as string | null) ?? null,
+    endDate: (row.end_date as string | null) ?? null,
+    volume: (row.volume as number | null) ?? null,
+    liquidity: (row.liquidity as number | null) ?? null,
+    cachedAt: row.cached_at as string,
+  };
+}
+
+export function getMarketCache(conditionId: string): MarketCache | undefined {
+  const row = getDb()
+    .prepare('SELECT * FROM markets_cache WHERE condition_id = ?')
+    .get(conditionId) as Record<string, unknown> | undefined;
+  return row ? mapMarketCacheRow(row) : undefined;
+}
+
+export function upsertMarketCache(
+  entry: Partial<MarketCache> & { conditionId: string }
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO markets_cache (condition_id, created_at, end_date, volume, liquidity, cached_at)
+       VALUES (@conditionId, @createdAt, @endDate, @volume, @liquidity, CURRENT_TIMESTAMP)
+       ON CONFLICT(condition_id) DO UPDATE SET
+         created_at = COALESCE(excluded.created_at, markets_cache.created_at),
+         end_date = COALESCE(excluded.end_date, markets_cache.end_date),
+         volume = COALESCE(excluded.volume, markets_cache.volume),
+         liquidity = COALESCE(excluded.liquidity, markets_cache.liquidity),
+         cached_at = CURRENT_TIMESTAMP`
+    )
+    .run({
+      conditionId: entry.conditionId,
+      createdAt: entry.createdAt ?? null,
+      endDate: entry.endDate ?? null,
+      volume: entry.volume ?? null,
+      liquidity: entry.liquidity ?? null,
+    });
+}
+
+// ============================================================
+// Positions — new column helpers
+// ============================================================
+
+export function setPositionHighPrice(tokenId: string, price: number, ts: number): void {
+  getDb()
+    .prepare(
+      `UPDATE positions
+       SET high_price = ?, high_price_updated_at = ?
+       WHERE token_id = ? AND (high_price IS NULL OR high_price < ?)`
+    )
+    .run(price, ts, tokenId, price);
+}
+
+export function markScaledOut(tokenId: string): void {
+  getDb()
+    .prepare('UPDATE positions SET scaled_out = 1 WHERE token_id = ?')
+    .run(tokenId);
+}
+
+export function hasScaledOut(tokenId: string): boolean {
+  const row = getDb()
+    .prepare('SELECT scaled_out FROM positions WHERE token_id = ?')
+    .get(tokenId) as { scaled_out: number } | undefined;
+  return (row?.scaled_out ?? 0) === 1;
+}
+
+// ============================================================
+// Tracked Traders — extensions
+// ============================================================
+
+export function updateTraderRealizedWinRate(
+  address: string,
+  realizedWinRate: number,
+  resolvedTrades: number,
+  confidence: number
+): void {
+  getDb()
+    .prepare(
+      `UPDATE tracked_traders
+       SET realized_win_rate = ?, resolved_trades_count = ?, confidence = ?
+       WHERE address = ?`
+    )
+    .run(realizedWinRate, resolvedTrades, confidence, address);
 }

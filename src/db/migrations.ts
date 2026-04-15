@@ -132,6 +132,128 @@ const MIGRATIONS: string[] = [
     severity TEXT NOT NULL,
     message TEXT NOT NULL
   )`,
+
+  // market_resolutions
+  `CREATE TABLE IF NOT EXISTS market_resolutions (
+    condition_id TEXT PRIMARY KEY,
+    winner_token_id TEXT,
+    resolved_at INTEGER,
+    market_title TEXT,
+    fetched_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_resolutions_status ON market_resolutions(status)`,
+
+  // backfill_jobs
+  `CREATE TABLE IF NOT EXISTS backfill_jobs (
+    trader_address TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    markets_total INTEGER DEFAULT 0,
+    markets_resolved INTEGER DEFAULT 0,
+    started_at INTEGER,
+    completed_at INTEGER,
+    error TEXT
+  )`,
+
+  // scoring_weights
+  `CREATE TABLE IF NOT EXISTS scoring_weights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    roi_w REAL NOT NULL,
+    freq_w REAL NOT NULL,
+    wr_w REAL NOT NULL,
+    cons_w REAL NOT NULL,
+    size_w REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual'
+  )`,
+
+  // trader_correlations
+  `CREATE TABLE IF NOT EXISTS trader_correlations (
+    trader_a TEXT NOT NULL,
+    trader_b TEXT NOT NULL,
+    correlation REAL NOT NULL,
+    computed_at INTEGER NOT NULL,
+    PRIMARY KEY (trader_a, trader_b)
+  )`,
+
+  // trader_blacklist
+  `CREATE TABLE IF NOT EXISTS trader_blacklist (
+    address TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    blacklisted_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
+
+  // equity_snapshots
+  `CREATE TABLE IF NOT EXISTS equity_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    equity_usd REAL NOT NULL,
+    source TEXT DEFAULT 'auto'
+  )`,
+  `CREATE INDEX IF NOT EXISTS equity_snapshots_ts ON equity_snapshots(timestamp DESC)`,
+
+  // conviction_params (singleton row id=1)
+  `CREATE TABLE IF NOT EXISTS conviction_params (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    bet_base REAL NOT NULL DEFAULT 1.0,
+    f1_anchor REAL NOT NULL DEFAULT 20.0,
+    f1_max REAL NOT NULL DEFAULT 5.0,
+    w2 REAL NOT NULL DEFAULT 0.3,
+    w3 REAL NOT NULL DEFAULT 0.5,
+    f4_boost REAL NOT NULL DEFAULT 1.0,
+    source TEXT NOT NULL DEFAULT 'default',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  // conviction_params_history
+  `CREATE TABLE IF NOT EXISTS conviction_params_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bet_base REAL NOT NULL,
+    f1_anchor REAL NOT NULL,
+    f1_max REAL NOT NULL,
+    w2 REAL NOT NULL,
+    w3 REAL NOT NULL,
+    f4_boost REAL NOT NULL,
+    source TEXT NOT NULL,
+    sharpe_old REAL,
+    sharpe_new REAL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    reason TEXT
+  )`,
+
+  // twap_orders
+  `CREATE TABLE IF NOT EXISTS twap_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_trade_id TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    condition_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    total_slices INTEGER NOT NULL,
+    slice_num INTEGER NOT NULL,
+    slice_usd REAL NOT NULL,
+    slice_size REAL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    order_id TEXT,
+    executed_price REAL,
+    executed_at DATETIME,
+    initial_price REAL NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    error TEXT,
+    UNIQUE(parent_trade_id, slice_num)
+  )`,
+  `CREATE INDEX IF NOT EXISTS twap_orders_parent ON twap_orders(parent_trade_id)`,
+  `CREATE INDEX IF NOT EXISTS twap_orders_status ON twap_orders(status)`,
+
+  // markets_cache
+  `CREATE TABLE IF NOT EXISTS markets_cache (
+    condition_id TEXT PRIMARY KEY,
+    created_at TEXT,
+    end_date TEXT,
+    volume REAL,
+    liquidity REAL,
+    cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 
 export function runMigrations(db: Database.Database): void {
@@ -152,9 +274,23 @@ export function runMigrations(db: Database.Database): void {
   const schemaUpdates = [
     'ALTER TABLE trades ADD COLUMN commission REAL DEFAULT 0',
     'ALTER TABLE tracked_traders ADD COLUMN exit_only INTEGER DEFAULT 0',
+    // Phase 1 additions
+    'ALTER TABLE positions ADD COLUMN high_price REAL',
+    'ALTER TABLE positions ADD COLUMN high_price_updated_at INTEGER DEFAULT 0',
+    'ALTER TABLE positions ADD COLUMN stop_loss_price REAL',
+    'ALTER TABLE positions ADD COLUMN trailing_stop_price REAL',
+    'ALTER TABLE positions ADD COLUMN scaled_out INTEGER DEFAULT 0',
+    "ALTER TABLE trades ADD COLUMN reason TEXT DEFAULT 'copy'",
+    'ALTER TABLE tracked_traders ADD COLUMN halted_until INTEGER DEFAULT 0',
+    'ALTER TABLE tracked_traders ADD COLUMN realized_win_rate REAL',
+    'ALTER TABLE tracked_traders ADD COLUMN resolved_trades_count INTEGER DEFAULT 0',
+    'ALTER TABLE tracked_traders ADD COLUMN confidence REAL DEFAULT 0',
+    // Seed conviction_params singleton row
+    `INSERT OR IGNORE INTO conviction_params (id, bet_base, f1_anchor, f1_max, w2, w3, f4_boost, source)
+     VALUES (1, 1.0, 20.0, 5.0, 0.3, 0.5, 1.0, 'default')`,
   ];
   for (const sql of schemaUpdates) {
-    try { db.exec(sql); } catch { /* column already exists */ }
+    try { db.exec(sql); } catch { /* column already exists or row already seeded */ }
   }
 
   // Count tables to verify

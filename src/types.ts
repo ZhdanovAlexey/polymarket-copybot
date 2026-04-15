@@ -115,6 +115,10 @@ export interface TrackedTrader {
   // Strategy fields
   probation: boolean;
   probationTradesLeft: number;
+  haltedUntil?: number;
+  realizedWinRate?: number | null;
+  resolvedTradesCount?: number;
+  confidence?: number;
 }
 
 export interface DetectedTrade {
@@ -155,6 +159,7 @@ export interface TradeResult {
   originalTraderPrice: number;
   isDryRun: boolean;
   commission: number;
+  reason?: TradeReason;
 }
 
 export interface BotPosition {
@@ -169,6 +174,11 @@ export interface BotPosition {
   totalInvested: number;
   openedAt: string;
   status: 'open' | 'closed' | 'redeemed';
+  highPrice?: number | null;
+  highPriceUpdatedAt?: number;
+  stopLossPrice?: number | null;
+  trailingStopPrice?: number | null;
+  scaledOut?: boolean;
 }
 
 export interface PnlSnapshot {
@@ -244,6 +254,69 @@ export interface AppConfig {
   anomalySizeMultiplier: number;
   backtestDefaultPeriodDays: number;
   optimizerAutoApply: boolean;
+  // Risk — stop-loss
+  stopLossMode: 'disabled' | 'fixed' | 'trailing' | 'both';
+  stopLossPct: number;
+  trailingStopPct: number;
+  stopLossAntiCascadeMs: number;
+  // Risk — rolling drawdown
+  rollingDdWindowDays: number;
+  rollingDdPct: number;
+  rollingDdAdaptive: boolean;
+  rollingDdEwmaSpan: number;
+  unpauseAfterHours: number;
+  // Risk — concentration
+  maxPositionsPerMarket: number;
+  maxExposurePerTokenPct: number;
+  maxExposurePerEventUsd: number;
+  maxSpreadPct: number;
+  // Risk — anomaly actions
+  anomalyActionSize: AnomalyAction;
+  anomalyActionMarket: AnomalyAction;
+  anomalyActionFrequency: AnomalyAction;
+  anomalyReduceFactor: number;
+  anomalyHaltDurationHours: number;
+  // Risk — health check
+  authMaxFailures: number;
+  healthCheckIntervalMs: number;
+  healthCheckAlertAfterMs: number;
+  // Selection — backfill
+  backfillConcurrency: number;
+  backfillPendingTtlMs: number;
+  // Selection — adaptive weights
+  adaptiveWeights: boolean;
+  weightsRecalcDays: number;
+  // Selection — probation / blacklist / correlation
+  probationSizeMultiplier: number;
+  blacklistDays: number;
+  maxPairwiseCorrelation: number;
+  minResolvedTradesForRealWinRate: number;
+  // Execution — TWAP
+  twapThresholdUsd: number;
+  twapSlices: number;
+  twapIntervalSec: number;
+  twapMaxDriftPct: number;
+  // Execution — optimizer
+  optimizerIntervalDays: number;
+  optimizerLookbackDays: number;
+  optimizerImprovementThreshold: number;
+  // Execution — market age
+  marketAgeFactorEnabled: boolean;
+  marketAgeCacheTtlMs: number;
+  // Execution — liquidity / depth
+  depthSlippagePct: number;
+  depthAdaptivePct: number;
+  // Execution — WebSocket
+  useWebSocket: boolean;
+  wsReconnectIntervalMs: number;
+  wsMaxReconnectAttempts: number;
+  // Execution — sell / exit
+  takeProfitPct: number;
+  partialScaleOutPct: number;
+  partialScaleOutThreshold: number;
+  // Execution — queue
+  maxConcurrentExecutions: number;
+  tradeQueueStaleMinutes: number;
 }
 
 // === Dashboard API Types ===
@@ -357,4 +430,159 @@ export interface AnomalyAlert {
   severity: 'low' | 'medium' | 'high';
   message: string;
   timestamp: string;
+}
+
+// === Phase 1 Foundation Types ===
+
+// Trade reason
+export type TradeReason = 'copy' | 'stop_loss' | 'trailing_stop' | 'anomaly' | 'manual' | 'redeem' | 'take_profit' | 'scale_out';
+
+// Market resolution
+export interface MarketResolution {
+  conditionId: string;
+  winnerTokenId: string | null;
+  resolvedAt: number | null;
+  marketTitle: string;
+  fetchedAt: number;
+  status: 'resolved' | 'pending' | 'closed_not_resolved';
+}
+
+export interface RealizedWinRateResult {
+  realizedWinRate: number;
+  realizedRoi: number;
+  resolvedTradesCount: number;
+  totalPnl: number;
+  confidence: number;
+}
+
+export interface BackfillJob {
+  traderAddress: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  marketsTotal: number;
+  marketsResolved: number;
+  startedAt: number | null;
+  completedAt: number | null;
+  error: string | null;
+}
+
+// Scoring weights
+export interface ScoringWeights {
+  roi: number;
+  frequency: number;
+  winRate: number;
+  consistency: number;
+  sizeProximity: number;
+}
+
+export interface ScoringWeightsRow extends ScoringWeights {
+  id: number;
+  timestamp: string;
+  source: 'manual' | 'auto' | 'default';
+}
+
+// Conviction
+export interface ConvictionParamsRow {
+  id: number;
+  betBase: number;
+  f1Anchor: number;
+  f1Max: number;
+  w2: number;
+  w3: number;
+  f4Boost: number;
+  source: 'default' | 'manual' | 'optimizer';
+  updatedAt: string;
+}
+
+// TWAP
+export interface TwapOrder {
+  id: number;
+  parentTradeId: string;
+  tokenId: string;
+  conditionId: string;
+  side: 'BUY' | 'SELL';
+  totalSlices: number;
+  sliceNum: number;
+  sliceUsd: number;
+  sliceSize: number | null;
+  status: 'pending' | 'executing' | 'filled' | 'partial' | 'cancelled' | 'drift_stopped';
+  orderId: string | null;
+  executedPrice: number | null;
+  executedAt: string | null;
+  initialPrice: number;
+  createdAt: string;
+  error: string | null;
+}
+
+// Market cache
+export interface MarketCache {
+  conditionId: string;
+  createdAt: string | null;
+  endDate: string | null;
+  volume: number | null;
+  liquidity: number | null;
+  cachedAt: string;
+}
+
+// Liquidity
+export interface LiquidityMetrics {
+  bid: number;
+  ask: number;
+  midpoint: number;
+  spreadPct: number;
+  depthAt2pct: number;
+}
+
+export interface LiquidityCheckResult {
+  allowed: boolean;
+  reason?: string;
+  adjustedBetUsd?: number;
+}
+
+// Exit strategy
+export type SellMode = 'mirror' | 'proportional' | 'take_profit' | 'partial_scale_out';
+
+export interface ExitSignal {
+  tokenId: string;
+  conditionId: string;
+  sellPct: number;
+  reason: string;
+  triggerSource: 'trader_mirror' | 'trader_proportional' | 'take_profit' | 'scale_out';
+}
+
+// Anomaly actions
+export type AnomalyAction = 'ignore' | 'alert' | 'reduce_size' | 'skip_trade' | 'halt_trader';
+
+// Stop-loss
+export type StopLossMode = 'disabled' | 'fixed' | 'trailing' | 'both';
+
+export interface StopLossTriggered {
+  tokenId: string;
+  conditionId: string;
+  reason: 'stop_loss' | 'trailing_stop';
+  currentPrice: number;
+  threshold: number;
+}
+
+// Equity snapshot
+export interface EquitySnapshot {
+  id: number;
+  timestamp: number;
+  equityUsd: number;
+  source: string;
+}
+
+// Trader correlation
+export interface TraderCorrelation {
+  traderA: string;
+  traderB: string;
+  correlation: number;
+  computedAt: number;
+}
+
+// Trader blacklist
+export interface TraderBlacklistEntry {
+  address: string;
+  reason: string;
+  blacklistedAt: number;
+  expiresAt: number;
 }
