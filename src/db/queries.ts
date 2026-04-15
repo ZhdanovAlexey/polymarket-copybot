@@ -1421,3 +1421,9 @@ export function updateTraderRealizedWinRate(
     )
     .run(realizedWinRate, resolvedTrades, confidence, address);
 }
+
+export function updateTraderScore(address: string, score: number): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET score = ? WHERE address = ?')
+    .run(score, address);
+}

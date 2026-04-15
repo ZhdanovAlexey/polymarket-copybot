@@ -6,10 +6,13 @@ import { Executor } from './executor.js';
 import { Portfolio } from './portfolio.js';
 import { RiskManager } from './risk-manager.js';
 import { Redeemer } from './redeemer.js';
+import { MarketResolver } from './strategy/market-resolver.js';
+import { ClobClientWrapper } from '../api/clob-client.js';
+import { DataApi } from '../api/data-api.js';
 import { broadcastEvent } from '../dashboard/routes/sse.js';
 import { setBotState } from '../dashboard/routes/api.js';
 import * as queries from '../db/queries.js';
-import type { BotStatus, DetectedTrade } from '../types.js';
+import type { BotStatus, DetectedTrade, TrackedTrader } from '../types.js';
 
 const log = createLogger('bot');
 
@@ -20,6 +23,7 @@ export class Bot {
   private portfolio: Portfolio;
   private riskManager: RiskManager;
   private redeemer: Redeemer;
+  private marketResolver: MarketResolver;
 
   private status: BotStatus = 'idle';
   private startTime: number | null = null;
@@ -33,6 +37,7 @@ export class Bot {
     this.portfolio = new Portfolio();
     this.riskManager = new RiskManager();
     this.redeemer = new Redeemer();
+    this.marketResolver = new MarketResolver(new ClobClientWrapper(), new DataApi());
 
     // Wire tracker events to executor
     this.tracker.on('newTrade', (trade: DetectedTrade) => this.handleNewTrade(trade));
@@ -82,6 +87,9 @@ export class Bot {
         }
         log.info({ count: traders.length }, 'Loaded cached traders from DB');
       }
+
+      // 1b. Kick off background backfill — non-blocking
+      this.startBackfill(traders).catch((err) => log.error({ err }, 'Backfill failed'));
 
       // 2. Move dropped-out traders to exit-only / fully deactivate those without positions
       this.reconcileDroppedTraders(traders);
@@ -295,6 +303,62 @@ export class Bot {
         severity: 'warning',
       });
     }
+  }
+
+  /**
+   * Background backfill: compute realized win rate for each top-N trader.
+   * Runs sequentially (one trader at a time) to keep API load manageable.
+   * Non-blocking — called via `.catch(...)` in start().
+   */
+  private async startBackfill(traders: TrackedTrader[]): Promise<void> {
+    log.info({ count: traders.length }, 'Starting background backfill');
+
+    for (const trader of traders) {
+      const ts = Math.floor(Date.now() / 1000);
+      queries.upsertBackfillJob({
+        traderAddress: trader.address,
+        status: 'running',
+        startedAt: ts,
+      });
+
+      try {
+        const result = await this.marketResolver.computeRealizedWinRate(trader.address);
+        queries.updateTraderRealizedWinRate(
+          trader.address,
+          result.realizedWinRate,
+          result.resolvedTradesCount,
+          result.confidence,
+        );
+        queries.upsertBackfillJob({
+          traderAddress: trader.address,
+          status: 'done',
+          completedAt: Math.floor(Date.now() / 1000),
+          marketsResolved: result.resolvedTradesCount,
+        });
+        log.info(
+          {
+            trader: trader.name,
+            realizedWinRate: result.realizedWinRate,
+            resolved: result.resolvedTradesCount,
+          },
+          'Backfill done for trader',
+        );
+      } catch (err) {
+        queries.upsertBackfillJob({
+          traderAddress: trader.address,
+          status: 'failed',
+          completedAt: Math.floor(Date.now() / 1000),
+          error: (err as Error).message,
+        });
+        log.error({ trader: trader.name, err }, 'Backfill failed for trader');
+      }
+    }
+
+    log.info({ tradersProcessed: traders.length }, 'Backfill complete');
+
+    // Re-score with real win rates now available
+    this.leaderboard.rescoreWithRealWinRates();
+    broadcastEvent('backfill_complete', { tradersProcessed: traders.length });
   }
 
   private savePnlSnapshot(): void {

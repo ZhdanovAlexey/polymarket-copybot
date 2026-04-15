@@ -112,6 +112,17 @@ export class Redeemer {
     for (const pos of open) {
       try {
         if (!pos.conditionId) continue;
+
+        // --- Cache-first: check market_resolutions before hitting CLOB API ---
+        const cached = queries.getMarketResolution(pos.conditionId);
+        if (cached?.status === 'resolved') {
+          const isWinner = pos.tokenId === cached.winnerTokenId;
+          const payout = isWinner ? pos.totalShares * 1.0 : 0;
+          this.applyDemoRedeem(pos, payout, isWinner);
+          redeemedCount++;
+          continue; // skip CLOB API call
+        }
+
         const market = await clob.getMarketByConditionId(pos.conditionId);
         if (!market || !market.closed) continue;
 
@@ -122,6 +133,19 @@ export class Redeemer {
         }
 
         const isWinner = ourToken.winner === true;
+
+        // --- Warm the cache for future redeem checks / backfill ---
+        const winnerToken = market.tokens.find((t) => t.winner === true);
+        const now = Math.floor(Date.now() / 1000);
+        queries.upsertMarketResolution({
+          conditionId: pos.conditionId,
+          winnerTokenId: winnerToken?.token_id ?? null,
+          resolvedAt: now,
+          marketTitle: market.question,
+          fetchedAt: now,
+          status: winnerToken ? 'resolved' : 'closed_not_resolved',
+        });
+
         const payout = isWinner ? pos.totalShares * 1.0 : 0;
         this.applyDemoRedeem(pos, payout, isWinner);
         redeemedCount += 1;

@@ -4,6 +4,7 @@ import { createLogger } from '../utils/logger.js';
 import { sleep } from '../utils/helpers.js';
 import * as queries from '../db/queries.js';
 import type { TrackedTrader, LeaderboardEntry, TradeEntry } from '../types.js';
+import { broadcastEvent } from '../dashboard/routes/sse.js';
 
 const log = createLogger('leaderboard');
 
@@ -40,8 +41,31 @@ export class Leaderboard {
     for (const entry of entries) {
       try {
         const trades = await this.dataApi.getTrades(entry.address, 100);
-        const winRate = this.calculateWinRate(trades);
-        const score = this.calculateScore(entry, winRate, trades.length);
+        const heuristicWinRate = this.calculateWinRate(trades);
+
+        // Check DB for real win rate from resolved markets (written by backfill)
+        const dbTrader = queries.getTraderByAddress(entry.address);
+        const hasRealWinRate =
+          dbTrader != null &&
+          dbTrader.resolvedTradesCount != null &&
+          dbTrader.resolvedTradesCount >= config.minResolvedTradesForRealWinRate &&
+          dbTrader.realizedWinRate != null;
+
+        const winRate = hasRealWinRate ? (dbTrader!.realizedWinRate as number) : heuristicWinRate;
+        const confidence = hasRealWinRate ? (dbTrader!.confidence ?? 1) : 1;
+        const score = this.calculateScore(entry, winRate, trades.length, confidence);
+
+        log.debug(
+          {
+            address: entry.address,
+            name: entry.name,
+            score,
+            winRateSource: hasRealWinRate ? 'realized' : 'heuristic',
+            winRate,
+            confidence,
+          },
+          'Trader scored',
+        );
 
         scored.push({
           address: entry.address,
@@ -57,9 +81,10 @@ export class Leaderboard {
           exitOnly: false,
           probation: false,
           probationTradesLeft: 0,
+          realizedWinRate: hasRealWinRate ? winRate : undefined,
+          resolvedTradesCount: dbTrader?.resolvedTradesCount,
+          confidence: hasRealWinRate ? confidence : undefined,
         });
-
-        log.debug({ address: entry.address, name: entry.name, score }, 'Trader scored');
       } catch (err) {
         log.warn({ address: entry.address, err }, 'Failed to enrich trader, skipping');
       }
@@ -86,8 +111,11 @@ export class Leaderboard {
   /**
    * Composite score calculation from spec:
    * P&L (40%) + Win Rate (25%) + Volume (15%) + Trade Count (10%) + Consistency (10%)
+   *
+   * Optional `confidence` (0–1) is applied as a multiplier to the final score.
+   * This allows traders with fewer resolved markets to be penalised proportionally.
    */
-  calculateScore(entry: LeaderboardEntry, winRate: number, tradesCount: number): number {
+  calculateScore(entry: LeaderboardEntry, winRate: number, tradesCount: number, confidence = 1): number {
     // Normalize each component to 0-100 scale
     // PnL: signed log scale so traders with negative PnL are penalised
     // (previously floored to 0, letting losers rank high via volume/winrate).
@@ -113,13 +141,14 @@ export class Leaderboard {
       winRate * 100 * (Math.min(tradesCount, 50) / 50),
     );
 
-    return (
+    const rawScore =
       pnlScore * 0.4 +
       winRateScore * 0.25 +
       volumeScore * 0.15 +
       tradesScore * 0.1 +
-      consistencyScore * 0.1
-    );
+      consistencyScore * 0.1;
+
+    return rawScore * Math.max(0, Math.min(1, confidence));
   }
 
   /**
@@ -174,5 +203,54 @@ export class Leaderboard {
     const traders = await this.fetchAndScore();
     this.saveToDb(traders);
     return traders;
+  }
+
+  /**
+   * Re-score all active traders in DB using realized_win_rate where available.
+   * Called after backfill completes so that the latest win-rate data is reflected
+   * in each trader's stored score without a full API leaderboard refresh.
+   */
+  rescoreWithRealWinRates(): void {
+    log.info('rescoreWithRealWinRates: updating scores for active traders');
+
+    const active = queries.getActiveTraders();
+    let updated = 0;
+
+    for (const trader of active) {
+      const hasRealWinRate =
+        trader.resolvedTradesCount != null &&
+        trader.resolvedTradesCount >= config.minResolvedTradesForRealWinRate &&
+        trader.realizedWinRate != null;
+
+      if (!hasRealWinRate) continue;
+
+      const winRate = trader.realizedWinRate as number;
+      const confidence = trader.confidence ?? 1;
+
+      // Build a minimal LeaderboardEntry from the stored trader data
+      const entry = {
+        address: trader.address,
+        name: trader.name,
+        pnl: trader.pnl,
+        volume: trader.volume,
+        markets_traded: 0,
+        positions_value: 0,
+        rank: 0,
+      };
+
+      const newScore = this.calculateScore(entry, winRate, trader.tradesCount, confidence);
+
+      queries.updateTraderScore(trader.address, newScore);
+      updated++;
+
+      log.debug(
+        { address: trader.address, name: trader.name, newScore, winRate, confidence },
+        'rescoreWithRealWinRates: trader score updated',
+      );
+    }
+
+    log.info({ updated, total: active.length }, 'rescoreWithRealWinRates complete');
+
+    broadcastEvent('leaderboard_rescored', { updated, total: active.length });
   }
 }
