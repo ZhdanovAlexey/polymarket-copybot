@@ -12,7 +12,8 @@
     "collect-history": "tsx src/cli/collect-history.ts",
     "grid-search": "tsx src/cli/grid-search.ts",
     "walk-forward": "tsx src/cli/walk-forward.ts",
-    "report": "tsx src/cli/report.ts"
+    "report": "tsx src/cli/report.ts",
+    "compare-scoring": "tsx src/cli/compare-scoring.ts"
   },
   "keywords": [],
   "author": "",

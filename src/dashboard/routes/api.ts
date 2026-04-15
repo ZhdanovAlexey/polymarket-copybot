@@ -278,6 +278,8 @@ apiRouter.get('/positions', async (_req, res) => {
         const traderName = opener?.name ?? '';
         try {
           const curPrice = await clob.getMidpoint(p.tokenId);
+          // Persist MTM price so executor budget calc uses fresh data
+          queries.setPositionPrice(p.tokenId, curPrice, Math.floor(Date.now() / 1000));
           const currentValue = p.totalShares * curPrice;
           const pnl = currentValue - p.totalInvested;
           return { ...p, curPrice, currentValue, pnl, traderAddress, traderName };
@@ -290,6 +292,17 @@ apiRouter.get('/positions', async (_req, res) => {
     res.json(enriched);
   } catch (err) {
     log.error({ err }, 'Failed to get positions');
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/positions/:tokenId/trades — individual trades that built (or reduced) a position
+apiRouter.get('/positions/:tokenId/trades', (_req, res) => {
+  try {
+    const trades = queries.getTradesByTokenId(_req.params.tokenId);
+    res.json(trades);
+  } catch (err) {
+    log.error({ err }, 'Failed to get trades for token');
     res.status(500).json({ error: (err as Error).message });
   }
 });

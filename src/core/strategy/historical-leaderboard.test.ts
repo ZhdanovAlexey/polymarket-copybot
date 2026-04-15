@@ -54,7 +54,7 @@ test('scoreTraderAtTime: returns zero score for trader with no trades in window'
   assert.equal(result.score, 0);
 });
 
-test('pickTopN: returns top-N by score descending (requires >= 3 trades)', () => {
+test('pickTopN: returns top-N by score descending (legacy mode, requires >= 3 trades)', () => {
   const trades = [
     // 0xA: 4 winning buys on c1 (tok1 is winner) — high PnL
     makeTrade({ id: 'a1', address: '0xA', timestamp: 2 * DAY, usdValue: 100, action: 'buy', tokenId: 'tok1', conditionId: 'c1' }),
@@ -68,12 +68,12 @@ test('pickTopN: returns top-N by score descending (requires >= 3 trades)', () =>
   ];
   const ds = makeDataset(trades);
   // T = day 5, windowDays = 4 → window [1*DAY, 5*DAY) — all trades in range
-  const top = pickTopN(ds, 5 * DAY, 4, 1);
+  const top = pickTopN(ds, 5 * DAY, 4, 1, 3, true);
   assert.equal(top.length, 1);
   assert.equal(top[0]!.address, '0xA'); // higher score (winning trades)
 });
 
-test('pickTopN: excludes traders with fewer than 3 trades', () => {
+test('pickTopN: excludes traders with fewer than 3 trades (legacy mode)', () => {
   const trades = [
     // 0xA: only 2 trades — should be excluded
     makeTrade({ id: 'a1', address: '0xA', timestamp: 2 * DAY, usdValue: 100, action: 'buy', tokenId: 'tok1', conditionId: 'c1' }),
@@ -84,7 +84,7 @@ test('pickTopN: excludes traders with fewer than 3 trades', () => {
     makeTrade({ id: 'b3', address: '0xB', timestamp: 4 * DAY, usdValue: 10, action: 'buy', tokenId: 'tok1', conditionId: 'c1' }),
   ];
   const ds = makeDataset(trades);
-  const top = pickTopN(ds, 5 * DAY, 4, 10);
+  const top = pickTopN(ds, 5 * DAY, 4, 10, 3, true);
   assert.equal(top.length, 1);
   assert.equal(top[0]!.address, '0xB');
 });

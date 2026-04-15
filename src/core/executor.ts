@@ -21,7 +21,7 @@ const CONVICTION_PARAMS: ConvictionParams = {
 const MAX_TTR_DAYS = 7;              // H7: only markets resolving within 7 days
 const EQUITY_SCALE_CAP = 3;          // max equity multiplier
 const MONTHLY_STOP_DD_PCT = 0.20;    // pause trading if month DD > 20%
-const MAX_POSITIONS_PER_TRADER = 4;  // max open positions per trader (5 traders × 4 = 20 global cap)
+const MAX_POSITIONS_PER_TRADER = 10; // safety cap on distinct open positions per trader
 
 const log = createLogger('executor');
 
@@ -204,6 +204,44 @@ export class Executor {
   }
 
   /**
+   * Compute per-trader budget allocation.
+   *
+   * Formula:
+   *   equity          = demoBalance + Σ effective_value(open_positions)
+   *   availableEquity = equity - exitOnlyInvested  // exclude capital held by rotated-out traders
+   *   perTrader       = availableEquity / activeTraderCount
+   *   invested        = this trader's proportional share of their open positions
+   *
+   * Uses mark-to-market (current_price × shares) if price is fresh (< 5 min),
+   * else falls back to cost basis (total_invested).
+   */
+  computeTraderBudget(address: string): { perTrader: number; invested: number } {
+    const demoBalance = queries.getDemoBalance();
+    const positions = queries.getAllOpenPositions();
+    const now = Math.floor(Date.now() / 1000);
+    const MTM_MAX_AGE_SEC = 300; // 5 minutes
+
+    const effectiveValue = (p: typeof positions[number]): number => {
+      if (p.currentPrice != null && p.currentPriceUpdatedAt != null &&
+          (now - p.currentPriceUpdatedAt) <= MTM_MAX_AGE_SEC) {
+        return p.totalShares * p.currentPrice;
+      }
+      return p.totalInvested; // fallback to cost basis
+    };
+
+    const totalEffective = positions.reduce((s, p) => s + effectiveValue(p), 0);
+    const equity = demoBalance + totalEffective;
+
+    const exitOnlyInvested = queries.getTotalInvestedByExitOnlyTraders();
+    const availableEquity = Math.max(0, equity - exitOnlyInvested);
+    const activeCount = Math.max(1, queries.getActiveTraderCount());
+    const perTrader = availableEquity / activeCount;
+
+    const invested = queries.getInvestedByTrader(address);
+    return { perTrader, invested };
+  }
+
+  /**
    * Monthly stop-loss check. Resets at 30-day boundaries.
    * Returns true if trading is stopped for this month.
    */
@@ -262,13 +300,27 @@ export class Executor {
     }
 
     try {
-      // 2. Per-trader position limit
+      // 2a. Per-trader position limit (safety cap)
       const traderOpenCount = queries.countOpenPositionsFromTrader(trade.traderAddress);
       if (traderOpenCount >= MAX_POSITIONS_PER_TRADER) {
         log.debug({ trader: trade.traderName, open: traderOpenCount, max: MAX_POSITIONS_PER_TRADER },
           'Per-trader position limit reached — skipping BUY');
         return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0,
           `Per-trader limit: ${traderOpenCount}/${MAX_POSITIONS_PER_TRADER} positions`);
+      }
+
+      // 2b. Per-trader budget limit: (equity - exitOnlyInvested) / activeCount
+      {
+        const budget = this.computeTraderBudget(trade.traderAddress);
+        if (budget.invested >= budget.perTrader) {
+          log.debug({
+            trader: trade.traderName,
+            invested: budget.invested.toFixed(2),
+            budget: budget.perTrader.toFixed(2),
+          }, 'Per-trader budget exhausted — skipping BUY');
+          return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0,
+            `Per-trader budget: $${budget.invested.toFixed(0)}/$${budget.perTrader.toFixed(0)}`);
+        }
       }
 
       // 3. H7 filter: skip markets with TTR > 7 days
@@ -289,7 +341,25 @@ export class Executor {
       }
 
       // 5. Calculate size — conviction-based sizing (Stage D)
-      const totalUsd = this.computeConvictionBet(trade);
+      let totalUsd = this.computeConvictionBet(trade);
+
+      // Cap to remaining per-trader budget
+      {
+        const budget = this.computeTraderBudget(trade.traderAddress);
+        const remaining = budget.perTrader - budget.invested;
+        if (totalUsd > remaining) {
+          totalUsd = Math.max(0, remaining);
+        }
+      }
+
+      // Skip trades below minimum size (protects against 0-USD records from budget cap)
+      if (totalUsd < 0.50) {
+        log.debug({ totalUsd: totalUsd.toFixed(3), trader: trade.traderName },
+          'Bet size below minimum after budget cap — skipping');
+        return this.createResult(trade, 'BUY', 'skipped', midpoint, 0, 0,
+          `Trade too small: $${totalUsd.toFixed(2)} < $0.50`);
+      }
+
       const size = totalUsd / midpoint;
 
       // 5. Execute or simulate

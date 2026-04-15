@@ -21,6 +21,7 @@ const defaultConfig: BacktestSimConfig = {
   conviction: { betBase: 10, f1Anchor: 100, f1Max: 5, w2: 0, w3: 0, f4Boost: 1.0 },
   topN: 10, leaderboardWindowDays: 30, maxTtrDays: Infinity,
   maxPositions: 20, initialCapital: 500, slippagePct: 0, commissionPct: 0,
+  scoringMode: 'legacy',
 };
 
 test('backtester: single winning trade → positive PnL', () => {

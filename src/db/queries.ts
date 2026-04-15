@@ -78,7 +78,7 @@ export function upsertTrader(trader: TrackedTrader): void {
          win_rate = excluded.win_rate,
          score = excluded.score,
          trades_count = excluded.trades_count,
-         last_seen_timestamp = excluded.last_seen_timestamp,
+         last_seen_timestamp = tracked_traders.last_seen_timestamp,
          active = excluded.active,
          exit_only = 0,
          probation = excluded.probation,
@@ -126,6 +126,13 @@ export function reactivateTrader(address: string): void {
 }
 
 /** Move to exit-only: stop copying BUYs but keep polling for SELL signals. */
+/** Update tracker cursor. Used by tracker after each poll to persist progress. */
+export function updateTraderLastSeen(address: string, ts: number): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET last_seen_timestamp = ? WHERE address = ?')
+    .run(ts, address);
+}
+
 export function setExitOnly(address: string): void {
   getDb()
     .prepare('UPDATE tracked_traders SET active = 0, exit_only = 1 WHERE address = ?')
@@ -137,6 +144,107 @@ export function deactivateTraderFully(address: string): void {
   getDb()
     .prepare('UPDATE tracked_traders SET active = 0, exit_only = 0 WHERE address = ?')
     .run(address);
+}
+
+/**
+ * Find inactive (active=0, exit_only=0) traders that still have open positions.
+ * These need to be restored to exit_only=1 so we keep polling their SELL signals.
+ */
+export function getOrphanedInactiveTraders(): TrackedTrader[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT tt.* FROM tracked_traders tt
+       WHERE tt.active = 0 AND tt.exit_only = 0
+       AND EXISTS (
+         SELECT 1 FROM positions p
+         JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY' AND t.trader_address = tt.address
+         WHERE p.status = 'open'
+       )`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  return rows.map(mapTraderRow);
+}
+
+/**
+ * USD value "tied up" in open positions attributed to this trader,
+ * weighted by this trader's share of total BUY volume on each position.
+ *
+ * Uses mark-to-market (current_price × total_shares) when price is fresh
+ * (< 5 min old), else falls back to cost basis (total_invested).
+ *
+ * Formula per position:
+ *   effective_value = MTM or cost_basis
+ *   trader_share    = effective_value × (trader_buy_shares / total_buy_shares)
+ */
+const MTM_MAX_AGE_SEC = 300;
+export function getInvestedByTrader(address: string): number {
+  const now = Math.floor(Date.now() / 1000);
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(
+         (CASE WHEN p.current_price IS NOT NULL
+               AND (? - p.current_price_updated_at) <= ?
+               THEN p.total_shares * p.current_price
+               ELSE p.total_invested END)
+         * (
+           (SELECT COALESCE(SUM(t.size), 0) FROM trades t
+             WHERE t.token_id = p.token_id AND t.side = 'BUY'
+             AND t.status IN ('simulated','filled')
+             AND t.trader_address = ?)
+           / NULLIF((SELECT SUM(t.size) FROM trades t
+             WHERE t.token_id = p.token_id AND t.side = 'BUY'
+             AND t.status IN ('simulated','filled')), 0)
+         )
+       ), 0) AS total
+       FROM positions p
+       WHERE p.status = 'open'
+       AND EXISTS (
+         SELECT 1 FROM trades t
+         WHERE t.trader_address = ? AND t.side = 'BUY' AND t.token_id = p.token_id
+         AND t.status IN ('simulated','filled')
+       )`,
+    )
+    .get(now, MTM_MAX_AGE_SEC, address, address) as { total: number } | undefined;
+  return row?.total ?? 0;
+}
+
+/**
+ * USD value tied up by exit-only traders (aggregate, proportionally weighted,
+ * mark-to-market with cost-basis fallback). Used to exclude "frozen" capital
+ * from active traders' budget allocation.
+ */
+export function getTotalInvestedByExitOnlyTraders(): number {
+  const now = Math.floor(Date.now() / 1000);
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(
+         (CASE WHEN p.current_price IS NOT NULL
+               AND (? - p.current_price_updated_at) <= ?
+               THEN p.total_shares * p.current_price
+               ELSE p.total_invested END)
+         * (
+           (SELECT COALESCE(SUM(t.size), 0) FROM trades t
+             WHERE t.token_id = p.token_id AND t.side = 'BUY'
+             AND t.status IN ('simulated','filled')
+             AND t.trader_address IN (SELECT address FROM tracked_traders WHERE exit_only = 1))
+           / NULLIF((SELECT SUM(t.size) FROM trades t
+             WHERE t.token_id = p.token_id AND t.side = 'BUY'
+             AND t.status IN ('simulated','filled')), 0)
+         )
+       ), 0) AS total
+       FROM positions p
+       WHERE p.status = 'open'`,
+    )
+    .get(now, MTM_MAX_AGE_SEC) as { total: number } | undefined;
+  return row?.total ?? 0;
+}
+
+/** Count of currently active (non-exit-only) traders. */
+export function getActiveTraderCount(): number {
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) AS cnt FROM tracked_traders WHERE active = 1`)
+    .get() as { cnt: number };
+  return row.cnt;
 }
 
 /** Count distinct open positions where this trader contributed a BUY trade. */
@@ -401,9 +509,11 @@ export function getClosedPositions(limit = 200): ClosedPositionRow[] {
               MAX(CASE WHEN t.side IN ('SELL','REDEEM') THEN t.timestamp END) AS closed_at,
               (SELECT ob.trader_address FROM trades ob
                  WHERE ob.token_id = p.token_id AND ob.side = 'BUY'
+                   AND ob.status IN ('simulated','filled')
                  ORDER BY ob.timestamp ASC LIMIT 1) AS trader_address,
               (SELECT ob.trader_name FROM trades ob
                  WHERE ob.token_id = p.token_id AND ob.side = 'BUY'
+                   AND ob.status IN ('simulated','filled')
                  ORDER BY ob.timestamp ASC LIMIT 1) AS trader_name
          FROM positions p
          LEFT JOIN trades t ON t.token_id = p.token_id
@@ -438,11 +548,14 @@ export function getClosedPositions(limit = 200): ClosedPositionRow[] {
 export function getOpeningTraderForToken(
   tokenId: string,
 ): { address: string; name: string } | undefined {
+  // Only consider SUCCESSFUL BUYs. Skipped trades (budget/limit/exit-only)
+  // don't actually open positions, so they shouldn't count as "opener".
   const row = getDb()
     .prepare(
       `SELECT trader_address AS address, trader_name AS name
          FROM trades
         WHERE token_id = ? AND side = 'BUY'
+          AND status IN ('simulated','filled')
         ORDER BY timestamp ASC
         LIMIT 1`,
     )
@@ -452,6 +565,24 @@ export function getOpeningTraderForToken(
 
 export function markPositionRedeemed(tokenId: string): void {
   getDb().prepare("UPDATE positions SET status = 'redeemed' WHERE token_id = ?").run(tokenId);
+}
+
+export function getTradesByTokenId(tokenId: string): TradeResult[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM trades
+        WHERE token_id = ? AND status IN ('filled','simulated')
+        ORDER BY timestamp ASC`,
+    )
+    .all(tokenId) as Array<Record<string, unknown>>;
+  return rows.map(mapTradeRow);
+}
+
+/** Update mark-to-market price for a position (called by background updater). */
+export function setPositionPrice(tokenId: string, price: number, ts: number): void {
+  getDb()
+    .prepare('UPDATE positions SET current_price = ?, current_price_updated_at = ? WHERE token_id = ?')
+    .run(price, ts, tokenId);
 }
 
 export function closePosition(tokenId: string): void {
@@ -471,6 +602,8 @@ function mapPositionRow(row: Record<string, unknown>): BotPosition {
     totalInvested: row.total_invested as number,
     openedAt: row.opened_at as string,
     status: row.status as BotPosition['status'],
+    currentPrice: row.current_price as number | null,
+    currentPriceUpdatedAt: row.current_price_updated_at as number | null,
   };
 }
 
@@ -709,6 +842,19 @@ export interface TraderAnalyticsRow {
 }
 
 export function getTraderAnalytics(): TraderAnalyticsRow[] {
+  // Step 0: auto-fix orphaned traders (inactive but with open positions → exit_only)
+  getDb()
+    .prepare(
+      `UPDATE tracked_traders SET exit_only = 1
+       WHERE active = 0 AND exit_only = 0
+       AND EXISTS (
+         SELECT 1 FROM positions p
+         JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY' AND t.trader_address = tracked_traders.address
+         WHERE p.status = 'open'
+       )`,
+    )
+    .run();
+
   // Step 1: base trader info + trade counts (fast, indexed)
   const rows = getDb()
     .prepare(
@@ -727,7 +873,12 @@ export function getTraderAnalytics(): TraderAnalyticsRow[] {
         WHERE status IN ('filled','simulated')
         GROUP BY trader_address
       ) ts ON ts.trader_address = tt.address
-      WHERE tt.active = 1 OR tt.exit_only = 1`,
+      WHERE tt.active = 1 OR tt.exit_only = 1
+         OR EXISTS (
+           SELECT 1 FROM positions p
+           JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY' AND t.trader_address = tt.address
+           WHERE p.status = 'open'
+         )`,
     )
     .all() as Array<Record<string, unknown>>;
 

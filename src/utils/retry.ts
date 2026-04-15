@@ -6,11 +6,13 @@ export interface RetryOptions {
   maxRetries?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
+  timeoutMs?: number;
 }
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_DELAY_MS = 30000;
+const DEFAULT_TIMEOUT_MS = 15000; // 15s per request — prevents hanging on network stalls
 
 export async function fetchWithRetry(
   url: string,
@@ -20,12 +22,16 @@ export async function fetchWithRetry(
   const maxRetries = retryOpts?.maxRetries ?? DEFAULT_MAX_RETRIES;
   const baseDelayMs = retryOpts?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
   const maxDelayMs = retryOpts?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
+  const timeoutMs = retryOpts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetch(url, options);
+      // Hard timeout: AbortSignal.timeout aborts the fetch if no response in timeoutMs.
+      // Prevents tracker/poll loops from hanging indefinitely on silent network stalls.
+      const signal = options?.signal ?? AbortSignal.timeout(timeoutMs);
+      const response = await fetch(url, { ...options, signal });
 
       if (response.ok) {
         return response;

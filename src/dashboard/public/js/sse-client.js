@@ -1,10 +1,6 @@
-// SSE Client Module
+// SSE Client Module — auto-connects on module load
 let eventSource = null;
 let reconnectTimeout = null;
-
-export function initSSE() {
-  connect();
-}
 
 function connect() {
   if (eventSource) {
@@ -25,21 +21,22 @@ function connect() {
   // Listen for specific event types
   eventSource.addEventListener('trade', (e) => {
     const { data } = JSON.parse(e.data);
-    // Add trade to live feed and trade log
+    // Add trade to live feed and trade log (no toast — too noisy)
     if (window.__addTrade) window.__addTrade(data);
-    if (window.__showToast) window.__showToast(`Trade: ${data.side} ${data.marketTitle}`, data.status === 'filled' ? 'success' : 'info');
   });
 
   eventSource.addEventListener('balance', (e) => {
     const { data } = JSON.parse(e.data);
-    // Update header balances
-    document.getElementById('usdc-balance').textContent = `USDC: $${data.usdc.toFixed(2)}`;
-    document.getElementById('matic-balance').textContent = `MATIC: ${data.matic.toFixed(4)}`;
+    const usdcEl = document.getElementById('usdc-balance');
+    if (usdcEl && data.usdc != null) usdcEl.textContent = `USDC: $${data.usdc.toFixed(2)}`;
+    const maticEl = document.getElementById('matic-balance');
+    if (maticEl && data.matic != null) maticEl.textContent = `MATIC: ${data.matic.toFixed(4)}`;
   });
 
   eventSource.addEventListener('status', (e) => {
     const { data } = JSON.parse(e.data);
     const badge = document.getElementById('bot-status');
+    if (!badge) return;
     if (data.running) {
       badge.textContent = '● Running';
       badge.className = 'status-badge running';
@@ -50,10 +47,9 @@ function connect() {
   });
 
   eventSource.addEventListener('alert', (e) => {
+    // Alerts are logged server-side; no UI toasts.
     const { data } = JSON.parse(e.data);
-    if (window.__showToast) {
-      window.__showToast(data.message, data.severity === 'error' ? 'error' : 'warning');
-    }
+    console.warn('[alert]', data.severity, data.message);
   });
 
   eventSource.addEventListener('pnl_update', (e) => {
@@ -63,9 +59,13 @@ function connect() {
   });
 
   eventSource.onerror = () => {
-    console.warn('SSE connection lost, reconnecting in 5s...');
-    eventSource.close();
-    reconnectTimeout = setTimeout(connect, 5000);
+    // EventSource auto-reconnects by default. Only force a new connection
+    // if it's in CLOSED state (unrecoverable).
+    if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+      console.warn('SSE closed, forcing reconnect in 5s...');
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      reconnectTimeout = setTimeout(connect, 5000);
+    }
   };
 }
 
@@ -75,3 +75,6 @@ export function closeSSE() {
     eventSource = null;
   }
 }
+
+// Auto-connect on module load (ES module top-level executes once)
+connect();

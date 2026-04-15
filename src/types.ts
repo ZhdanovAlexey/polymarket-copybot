@@ -171,6 +171,8 @@ export interface BotPosition {
   totalInvested: number;
   openedAt: string;
   status: 'open' | 'closed' | 'redeemed';
+  currentPrice?: number | null;          // last known midpoint (mark-to-market)
+  currentPriceUpdatedAt?: number | null; // unix seconds
 }
 
 export interface PnlSnapshot {
@@ -429,6 +431,7 @@ export interface BacktestSimConfig {
   initialCapital: number;         // starting equity
   slippagePct: number;            // fixed spread per trade (e.g. 1)
   commissionPct: number;          // per-trade commission (e.g. 2)
+  scoringMode?: 'new' | 'legacy'; // leaderboard scoring formula (default: 'new')
 }
 
 export interface SimPosition {

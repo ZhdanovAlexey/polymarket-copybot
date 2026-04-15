@@ -25,6 +25,7 @@ export class Bot {
   private startTime: number | null = null;
   private leaderboardRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private pnlSnapshotTimer: ReturnType<typeof setInterval> | null = null;
+  private mtmTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.leaderboard = new Leaderboard();
@@ -86,6 +87,17 @@ export class Bot {
       // 2. Move dropped-out traders to exit-only / fully deactivate those without positions
       this.reconcileDroppedTraders(traders);
 
+      // 2a. Safety: restore exit-only status for inactive traders that still have open positions
+      //     (can happen if bot was restarted and reconcile only checked active traders)
+      const orphaned = queries.getOrphanedInactiveTraders();
+      for (const t of orphaned) {
+        queries.setExitOnly(t.address);
+        log.info(
+          { trader: t.name, address: t.address },
+          'Restored exit-only status for inactive trader with open positions',
+        );
+      }
+
       // 2b. Initialize tracker with active + exit-only traders
       try {
         this.tracker.initialize(queries.getTrackedForPolling());
@@ -107,6 +119,10 @@ export class Bot {
           reloadConfigFromDb(queries.getSetting);
           const updated = await this.leaderboard.refresh();
           this.reconcileDroppedTraders(updated);
+          for (const ot of queries.getOrphanedInactiveTraders()) {
+            queries.setExitOnly(ot.address);
+            log.info({ trader: ot.name, address: ot.address }, 'Restored exit-only (orphaned)');
+          }
           this.tracker.initialize(queries.getTrackedForPolling());
           log.info({ count: updated.length }, 'Leaderboard refreshed');
         } catch (err) {
@@ -118,6 +134,17 @@ export class Bot {
       this.pnlSnapshotTimer = setInterval(() => {
         this.savePnlSnapshot();
       }, 300_000);
+
+      // 6. Schedule mark-to-market updates (every 60s)
+      const { ClobClientWrapper } = await import('../api/clob-client.js');
+      const clobPublic = new ClobClientWrapper();
+      const mtmRun = () => {
+        this.portfolio
+          .markToMarket((tokenId) => clobPublic.getMidpoint(tokenId))
+          .catch((err) => log.error({ err }, 'Mark-to-market failed'));
+      };
+      mtmRun(); // run once immediately
+      this.mtmTimer = setInterval(mtmRun, 60_000);
 
       queries.insertActivity('start', 'Bot started');
       broadcastEvent('status', { running: true, tradersCount: traders.length, uptime: 0 });
@@ -144,6 +171,10 @@ export class Bot {
     if (this.pnlSnapshotTimer) {
       clearInterval(this.pnlSnapshotTimer);
       this.pnlSnapshotTimer = null;
+    }
+    if (this.mtmTimer) {
+      clearInterval(this.mtmTimer);
+      this.mtmTimer = null;
     }
 
     this.status = 'stopped';
@@ -239,11 +270,9 @@ export class Bot {
   }
 
   private async handleNewTrade(trade: DetectedTrade): Promise<void> {
-    // Monthly stop-loss: skip BUY signals when stopped (SELL still processed)
-    if (trade.action === 'buy' && this.executor.checkMonthlyStop()) {
-      log.debug({ market: trade.marketTitle }, 'Monthly stop active — skipping BUY');
-      return;
-    }
+    // Monthly stop-loss disabled — with small deposit + conviction sizing,
+    // 20% drawdown from session start is easy to hit and silently blocks trades.
+    // Capital protection is already handled by per-trader budget + position caps.
 
     try {
       const result = await this.executor.processTrade(trade);

@@ -81,7 +81,8 @@ export function runBacktest(
     }
 
     // 1. Rebuild leaderboard for this day.
-    const topTraders = pickTopN(ds, dayTs + DAY_SECONDS, config.leaderboardWindowDays, config.topN, 1);
+    const legacy = config.scoringMode === 'legacy';
+    const topTraders = pickTopN(ds, dayTs + DAY_SECONDS, config.leaderboardWindowDays, config.topN, 1, legacy);
     const activeSet = new Set(topTraders.map((t) => t.address));
     const traderScoreMap = new Map(topTraders.map((t) => [t.address, t.score]));
 

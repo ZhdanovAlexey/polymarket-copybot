@@ -20,6 +20,10 @@ export class Tracker extends EventEmitter {
   private seenTxHashes: Set<string> = new Set();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private isPolling = false;
+  private pollStartedAt = 0; // ms timestamp of current in-flight poll (0 = idle)
+
+  /** Max time a single poll may run before watchdog force-resets the flag. */
+  private static readonly POLL_WATCHDOG_MS = 120_000; // 2 minutes
 
   constructor(dataApi?: DataApi) {
     super();
@@ -58,11 +62,20 @@ export class Tracker extends EventEmitter {
    */
   async pollOnce(): Promise<{ checked: number; newTrades: number }> {
     if (this.isPolling) {
-      log.warn('Poll already in progress, skipping');
-      return { checked: 0, newTrades: 0 };
+      // Watchdog: if a poll has been "in progress" longer than the threshold,
+      // assume it's stuck (e.g., a silent fetch stall) and force-reset the flag.
+      const elapsed = Date.now() - this.pollStartedAt;
+      if (elapsed > Tracker.POLL_WATCHDOG_MS) {
+        log.error({ elapsedMs: elapsed }, 'Poll stuck — force-resetting isPolling flag');
+        this.isPolling = false;
+      } else {
+        log.warn({ elapsedMs: elapsed }, 'Poll already in progress, skipping');
+        return { checked: 0, newTrades: 0 };
+      }
     }
 
     this.isPolling = true;
+    this.pollStartedAt = Date.now();
     let totalNewTrades = 0;
     let checked = 0;
 
@@ -116,8 +129,8 @@ export class Tracker extends EventEmitter {
           if (activities.length > 0) {
             const latestTs = Math.max(...activities.map(a => a.timestamp));
             trader.lastSeenTimestamp = latestTs;
-            // Persist to DB
-            queries.upsertTrader(trader);
+            // Persist to DB (dedicated update — upsertTrader preserves existing ts on conflict)
+            queries.updateTraderLastSeen(address, latestTs);
           }
 
           checked++;
@@ -135,6 +148,7 @@ export class Tracker extends EventEmitter {
       this.emit('pollComplete', { checked, newTrades: totalNewTrades });
     } finally {
       this.isPolling = false;
+      this.pollStartedAt = 0;
     }
 
     // Trim seen hashes set to prevent memory leak (keep last 5000)

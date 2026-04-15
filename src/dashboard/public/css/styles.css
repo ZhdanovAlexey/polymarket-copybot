@@ -1498,3 +1498,11 @@ table.sortable thead th.sort-desc::after {
     height: auto;
   }
 }
+
+/* ---- Position detail (expandable sub-rows) ---- */
+tr[data-token-id] { cursor: pointer; }
+tr[data-token-id].expanded { background: var(--bg-tertiary); }
+.position-detail-row > td { padding: 0 0 0 24px !important; background: var(--bg-secondary); border-top: none; }
+.detail-subtable { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin: 6px 0; }
+.detail-subtable th { color: var(--text-secondary); font-weight: 500; padding: 3px 8px; text-align: left; border-bottom: 1px solid var(--border-color); }
+.detail-subtable td { padding: 3px 8px; color: var(--text-primary); }

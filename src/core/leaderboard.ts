@@ -35,13 +35,15 @@ export class Leaderboard {
 
     log.info({ requested: fetchLimit, fetched: entries.length }, 'Leaderboard entries fetched');
 
-    // 2. Enrich each trader with win rate from their trade history
+    // 2. Enrich each trader with trade history (up to 500 trades for frequency metrics)
     const scored: TrackedTrader[] = [];
     for (const entry of entries) {
       try {
-        const trades = await this.dataApi.getTrades(entry.address, 100);
+        const trades = await this.dataApi.getTrades(entry.address, 500);
         const winRate = this.calculateWinRate(trades);
-        const score = this.calculateScore(entry, winRate, trades.length);
+        const { tradesPerDay, avgTradeUsd, consistency } = this.calculateFrequencyMetrics(trades);
+        const roi = entry.volume > 0 ? entry.pnl / entry.volume : 0;
+        const score = this.calculateScore(roi, tradesPerDay, winRate, consistency, avgTradeUsd);
 
         scored.push({
           address: entry.address,
@@ -59,7 +61,11 @@ export class Leaderboard {
           probationTradesLeft: 0,
         });
 
-        log.debug({ address: entry.address, name: entry.name, score }, 'Trader scored');
+        log.debug({
+          address: entry.address, name: entry.name, score: score.toFixed(1),
+          tradesPerDay: tradesPerDay.toFixed(1), roi: (roi * 100).toFixed(2) + '%',
+          avgTradeUsd: avgTradeUsd.toFixed(0), consistency: (consistency * 100).toFixed(0) + '%',
+        }, 'Trader scored');
       } catch (err) {
         log.warn({ address: entry.address, err }, 'Failed to enrich trader, skipping');
       }
@@ -68,7 +74,7 @@ export class Leaderboard {
       await sleep(RATE_LIMIT_DELAY_MS);
     }
 
-    // 3. Filter
+    // 3. Filter by hard gates
     const filtered = this.filterByActivity(scored);
 
     // 4. Rank by composite score DESC and take top N.
@@ -76,7 +82,7 @@ export class Leaderboard {
     const topN = filtered.slice(0, config.topTradersCount);
 
     log.info(
-      { requested: config.topTradersCount, scored: scored.length, filtered: topN.length },
+      { requested: config.topTradersCount, scored: scored.length, afterFilter: filtered.length, topN: topN.length },
       'Scoring complete',
     );
 
@@ -84,68 +90,88 @@ export class Leaderboard {
   }
 
   /**
-   * Composite score calculation from spec:
-   * P&L (40%) + Win Rate (25%) + Volume (15%) + Trade Count (10%) + Consistency (10%)
+   * NEW composite score: optimized for copy-trading on small deposits.
+   * ROI 30% + Frequency 25% + WinRate 20% + Consistency 15% + SizeProximity 10%.
    */
-  calculateScore(entry: LeaderboardEntry, winRate: number, tradesCount: number): number {
-    // Normalize each component to 0-100 scale
-    // PnL: signed log scale so traders with negative PnL are penalised
-    // (previously floored to 0, letting losers rank high via volume/winrate).
-    const pnlSign = entry.pnl >= 0 ? 1 : -1;
-    const pnlMagnitude = Math.min(100, (Math.log10(Math.max(1, Math.abs(entry.pnl))) / 7) * 100);
-    const pnlScore = pnlSign * pnlMagnitude;
-
-    // Win rate: direct percentage
+  calculateScore(
+    roi: number,
+    tradesPerDay: number,
+    winRate: number,
+    consistency: number,
+    avgTradeUsd: number,
+  ): number {
+    // ROI: 10% ROI = score 100
+    const roiScore = Math.min(100, Math.max(0, roi * 1000));
+    // Frequency: 5 trades/day = score 100
+    const freqScore = Math.min(100, tradesPerDay * 20);
+    // Win rate: direct 0-100
     const winRateScore = winRate * 100;
-
-    // Volume: log scale
-    const volumeScore = Math.min(
-      100,
-      Math.max(0, (Math.log10(Math.max(1, entry.volume)) / 8) * 100),
-    );
-
-    // Trade count: more trades = better, cap at 100+ trades
-    const tradesScore = Math.min(100, (tradesCount / 100) * 100);
-
-    // Consistency: simple heuristic -- high win rate + many trades = consistent
-    const consistencyScore = Math.min(
-      100,
-      winRate * 100 * (Math.min(tradesCount, 50) / 50),
-    );
+    // Consistency: trades every day = 100
+    const consistencyScore = consistency * 100;
+    // Size proximity: bell curve centered on $500, σ=2 (log scale)
+    const logAvg = Math.log(Math.max(1, avgTradeUsd));
+    const logCenter = Math.log(500);
+    const sizeScore = 100 * Math.exp(-((logAvg - logCenter) ** 2) / (2 * 2 * 2));
 
     return (
-      pnlScore * 0.4 +
-      winRateScore * 0.25 +
-      volumeScore * 0.15 +
-      tradesScore * 0.1 +
-      consistencyScore * 0.1
+      roiScore * 0.30 +
+      freqScore * 0.25 +
+      winRateScore * 0.20 +
+      consistencyScore * 0.15 +
+      sizeScore * 0.10
     );
   }
 
   /**
+   * Frequency metrics from trade history.
+   */
+  calculateFrequencyMetrics(trades: TradeEntry[]): {
+    tradesPerDay: number;
+    avgTradeUsd: number;
+    consistency: number;
+  } {
+    if (trades.length === 0) return { tradesPerDay: 0, avgTradeUsd: 0, consistency: 0 };
+
+    const timestamps = trades.map((t) => {
+      const ts = typeof t.timestamp === 'string' ? new Date(t.timestamp).getTime() / 1000 : t.timestamp;
+      return ts;
+    });
+    const minTs = Math.min(...timestamps);
+    const maxTs = Math.max(...timestamps);
+    const spanDays = Math.max(1, (maxTs - minTs) / 86400);
+
+    const tradesPerDay = trades.length / spanDays;
+    const totalUsd = trades.reduce((s, t) => s + t.size * t.price, 0);
+    const avgTradeUsd = totalUsd / trades.length;
+
+    const uniqueDays = new Set(timestamps.map((ts) => Math.floor(ts / 86400))).size;
+    const consistency = uniqueDays / Math.max(1, spanDays);
+
+    return { tradesPerDay, avgTradeUsd, consistency };
+  }
+
+  /**
    * Calculate win rate from trade history.
-   *
-   * A "win" is hard to determine from trade data alone.
-   * Heuristic: trades bought at price > 0.5 are bets on the likely outcome,
-   * which correlates with successful prediction. This is a rough proxy that
-   * can be refined later with resolved-market data.
+   * Heuristic: BUY at price > 0.5 = bet on likely outcome (proxy for win).
+   * In live we don't have resolved markets, so this approximation is kept
+   * but with reduced weight (20% vs 25% in legacy).
    */
   calculateWinRate(trades: TradeEntry[]): number {
     if (trades.length === 0) return 0;
-
     const profitable = trades.filter((t) => t.price > 0.5).length;
     return profitable / trades.length;
   }
 
   /**
-   * Filter traders by minimum activity thresholds
+   * Hard gates: filter out traders unsuitable for copy-trading.
    */
   filterByActivity(traders: TrackedTrader[]): TrackedTrader[] {
     return traders.filter((t) => {
       // Min volume filter (from config)
       if (config.minTraderVolume > 0 && t.volume < config.minTraderVolume) return false;
-      // Min trades
-      if (t.tradesCount < 3) return false;
+      // Hard gates
+      if (t.tradesCount < 10) return false;          // not enough data
+      if (t.pnl < 0) return false;                   // losing trader
       return true;
     });
   }

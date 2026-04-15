@@ -106,4 +106,37 @@ export class Portfolio {
   getTotalInvested(): number {
     return this.getAllPositions().reduce((sum, p) => sum + p.totalInvested, 0);
   }
+
+  /**
+   * Fetch current midpoint prices for all open positions and persist to DB.
+   * Used for mark-to-market valuation in budget calculations.
+   * Failures per-position are tolerated (market may be resolved / 404).
+   */
+  async markToMarket(
+    getMidpoint: (tokenId: string) => Promise<number>,
+  ): Promise<{ updated: number; failed: number }> {
+    const positions = this.getAllPositions();
+    const now = Math.floor(Date.now() / 1000);
+    let updated = 0;
+    let failed = 0;
+
+    await Promise.all(
+      positions.map(async (p) => {
+        try {
+          const price = await getMidpoint(p.tokenId);
+          if (Number.isFinite(price) && price > 0) {
+            queries.setPositionPrice(p.tokenId, price, now);
+            updated++;
+          }
+        } catch {
+          failed++;
+        }
+      }),
+    );
+
+    if (updated > 0 || failed > 0) {
+      log.debug({ updated, failed, total: positions.length }, 'Mark-to-market updated');
+    }
+    return { updated, failed };
+  }
 }

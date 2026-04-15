@@ -147,7 +147,7 @@ export class ClobClientWrapper {
       log.debug({ tokenId, mid }, 'getMidpoint result');
       return mid;
     } catch (err) {
-      log.error({ err, tokenId }, 'failed to fetch midpoint');
+      log.warn({ tokenId }, 'failed to fetch midpoint (market may be resolved)');
       throw err;
     }
   }

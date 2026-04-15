@@ -233,6 +233,8 @@ export function runMigrations(db: Database.Database): void {
   const schemaUpdates = [
     'ALTER TABLE trades ADD COLUMN commission REAL DEFAULT 0',
     'ALTER TABLE tracked_traders ADD COLUMN exit_only INTEGER DEFAULT 0',
+    'ALTER TABLE positions ADD COLUMN current_price REAL',
+    'ALTER TABLE positions ADD COLUMN current_price_updated_at INTEGER DEFAULT 0',
   ];
   for (const sql of schemaUpdates) {
     try { db.exec(sql); } catch { /* column already exists */ }
