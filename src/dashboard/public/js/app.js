@@ -39,7 +39,9 @@ const sortState = {
    ================================================================ */
 
 async function fetchJson(url) {
-  const res = await fetch(`${API_BASE}${url}`);
+  // Hard timeout (10s) — prevents UI freeze when backend endpoint stalls.
+  // AbortSignal.timeout throws AbortError, handled by caller's try/catch.
+  const res = await fetch(`${API_BASE}${url}`, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -57,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
   wireButtons();
   initTableSorting();
   wireManualCloseHandlers();
+  wirePositionRowExpand();
   refreshAll();
   startRefreshLoop();
   startUptimeTicker();
@@ -72,16 +75,25 @@ function startRefreshLoop() {
   refreshTimer = setInterval(refreshAll, REFRESH_INTERVAL_MS);
 }
 
+let _refreshInFlight = false;
 async function refreshAll() {
-  await Promise.allSettled([
-    refreshStatus(),
-    refreshMetrics(),
-    refreshTraders(),
-    refreshTrades(),
-    refreshPositions(),
-    refreshClosedPositions(),
-    refreshChart(),
-  ]);
+  // Guard against overlapping refreshes — if previous refresh hasn't finished,
+  // skip this tick. Prevents pileup of stalled fetches freezing the UI.
+  if (_refreshInFlight) return;
+  _refreshInFlight = true;
+  try {
+    await Promise.allSettled([
+      refreshStatus(),
+      refreshMetrics(),
+      refreshTraders(),
+      refreshTrades(),
+      refreshPositions(),
+      refreshClosedPositions(),
+      refreshChart(),
+    ]);
+  } finally {
+    _refreshInFlight = false;
+  }
 }
 
 /* ---- Status ---- */
@@ -165,6 +177,7 @@ async function refreshTrades() {
 
 async function refreshPositions() {
   try {
+    _posTradeCache.clear();
     const data = await fetchJson('/api/positions');
     renderPositions(data);
   } catch (err) {
@@ -197,7 +210,7 @@ function renderPositions(positions) {
   }
 
   if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No open positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No open positions</td></tr>';
     if (totalEl) totalEl.textContent = '--';
     return;
   }
@@ -212,7 +225,8 @@ function renderPositions(positions) {
       const traderLabel = p.traderName || (p.traderAddress ? p.traderAddress.slice(0, 6) + '\u2026' + p.traderAddress.slice(-4) : '--');
 
       return `
-        <tr data-token-id="${escapeHtml(p.tokenId)}">
+        <tr data-token-id="${escapeHtml(p.tokenId)}" data-trader-address="${escapeHtml(p.traderAddress || '')}">
+          <td title="${p.openedAt ? relativeTime(p.openedAt) : ''}">${p.openedAt ? formatOpenedTime(p.openedAt) : '--'}</td>
           <td title="${escapeHtml(p.traderAddress || '')}">${escapeHtml(truncate(traderLabel, 14))}</td>
           <td title="${escapeHtml(p.marketTitle)}">${marketLink(p.marketSlug, p.marketTitle, 45)}</td>
           <td>${escapeHtml(p.outcome || '--')}</td>
@@ -687,4 +701,93 @@ function relativeTime(timestamp) {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
+}
+
+/** Format timestamp as "HH:MM" (today) or "Apr 13 16:05" (other days) */
+function formatOpenedTime(timestamp) {
+  if (!timestamp) return '--';
+  const d = new Date(timestamp);
+  if (isNaN(d.getTime())) return '--';
+  const now = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[d.getMonth()]} ${d.getDate()} ${hh}:${mm}`;
+}
+
+/* ---- Expandable position detail rows ---- */
+const _posTradeCache = new Map();
+
+function wirePositionRowExpand() {
+  const tbody = document.getElementById('positions-body');
+  if (!tbody) return;
+  tbody.addEventListener('click', async (e) => {
+    // Don't expand when clicking the Close button
+    if (e.target.closest('.btn-close-position')) return;
+    const row = e.target.closest('tr[data-token-id]');
+    if (!row) return;
+    const tokenId = row.dataset.tokenId;
+    const ownerAddress = row.dataset.traderAddress || '';
+    if (!tokenId) return;
+
+    // Toggle: if next sibling is a detail row, remove it
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('position-detail-row')) {
+      next.remove();
+      row.classList.remove('expanded');
+      return;
+    }
+
+    // Create detail row
+    const detailRow = document.createElement('tr');
+    detailRow.classList.add('position-detail-row');
+    const td = document.createElement('td');
+    td.colSpan = 10;
+    td.innerHTML = '<span class="text-muted">Loading\u2026</span>';
+    detailRow.appendChild(td);
+    row.after(detailRow);
+    row.classList.add('expanded');
+
+    try {
+      let trades = _posTradeCache.get(tokenId);
+      if (!trades) {
+        const res = await fetch(`/api/positions/${encodeURIComponent(tokenId)}/trades`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        trades = await res.json();
+        _posTradeCache.set(tokenId, trades);
+      }
+
+      // Filter to only show trades from the position's owner trader
+      if (ownerAddress) {
+        trades = trades.filter(t => (t.traderAddress || '') === ownerAddress);
+      }
+
+      if (!trades.length) {
+        td.innerHTML = '<span class="text-muted">No trade records</span>';
+        return;
+      }
+
+      let html = '<table class="detail-subtable"><thead><tr>' +
+        '<th>Time</th><th>Trader</th><th>Side</th><th>Shares</th><th>Price</th><th>USD</th><th>Comm.</th>' +
+        '</tr></thead><tbody>';
+      for (const t of trades) {
+        const sideClass = t.side === 'BUY' ? 'pnl-positive' : (t.side === 'SELL' ? 'pnl-negative' : '');
+        const traderLabel = t.traderName || (t.traderAddress ? t.traderAddress.slice(0, 6) + '\u2026' + t.traderAddress.slice(-4) : '--');
+        html += `<tr>
+          <td>${formatOpenedTime(t.timestamp)}</td>
+          <td title="${escapeHtml(t.traderAddress || '')}">${escapeHtml(traderLabel)}</td>
+          <td class="${sideClass}">${t.side}</td>
+          <td>${(t.size || 0).toFixed(2)}</td>
+          <td>$${(t.price || 0).toFixed(4)}</td>
+          <td>$${(t.totalUsd || 0).toFixed(2)}</td>
+          <td>$${(t.commission || 0).toFixed(3)}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      td.innerHTML = html;
+    } catch (err) {
+      td.innerHTML = `<span class="text-muted">Failed to load trades: ${escapeHtml(err.message)}</span>`;
+    }
+  });
 }
