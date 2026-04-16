@@ -1415,6 +1415,7 @@ function mapMarketCacheRow(row: Record<string, unknown>): MarketCache {
     conditionId: row.condition_id as string,
     createdAt: (row.created_at as string | null) ?? null,
     endDate: (row.end_date as string | null) ?? null,
+    gameStartTime: (row.game_start_time as string | null) ?? null,
     volume: (row.volume as number | null) ?? null,
     liquidity: (row.liquidity as number | null) ?? null,
     cachedAt: row.cached_at as string,
@@ -1433,11 +1434,12 @@ export function upsertMarketCache(
 ): void {
   getDb()
     .prepare(
-      `INSERT INTO markets_cache (condition_id, created_at, end_date, volume, liquidity, cached_at)
-       VALUES (@conditionId, @createdAt, @endDate, @volume, @liquidity, CURRENT_TIMESTAMP)
+      `INSERT INTO markets_cache (condition_id, created_at, end_date, game_start_time, volume, liquidity, cached_at)
+       VALUES (@conditionId, @createdAt, @endDate, @gameStartTime, @volume, @liquidity, CURRENT_TIMESTAMP)
        ON CONFLICT(condition_id) DO UPDATE SET
          created_at = COALESCE(excluded.created_at, markets_cache.created_at),
          end_date = COALESCE(excluded.end_date, markets_cache.end_date),
+         game_start_time = COALESCE(excluded.game_start_time, markets_cache.game_start_time),
          volume = COALESCE(excluded.volume, markets_cache.volume),
          liquidity = COALESCE(excluded.liquidity, markets_cache.liquidity),
          cached_at = CURRENT_TIMESTAMP`
@@ -1446,6 +1448,7 @@ export function upsertMarketCache(
       conditionId: entry.conditionId,
       createdAt: entry.createdAt ?? null,
       endDate: entry.endDate ?? null,
+      gameStartTime: entry.gameStartTime ?? null,
       volume: entry.volume ?? null,
       liquidity: entry.liquidity ?? null,
     });

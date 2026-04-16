@@ -251,7 +251,7 @@ apiRouter.get('/metrics', (_req, res) => {
   }
 });
 
-// GET /api/positions (enriched with current prices)
+// GET /api/positions (enriched with current prices + market dates)
 apiRouter.get('/positions', async (_req, res) => {
   try {
     const positions = queries.getAllOpenPositions();
@@ -264,15 +264,40 @@ apiRouter.get('/positions', async (_req, res) => {
         const opener = queries.getOpeningTraderForToken(p.tokenId);
         const traderAddress = opener?.address ?? '';
         const traderName = opener?.name ?? '';
+
+        // Market dates from cache (lazy-fill from CLOB if missing)
+        let endDate: string | null = null;
+        let gameStartTime: string | null = null;
+        if (p.conditionId) {
+          const cache = queries.getMarketCache(p.conditionId);
+          endDate = cache?.endDate ?? null;
+          gameStartTime = cache?.gameStartTime ?? null;
+          // If game_start_time is missing, fetch from CLOB and cache
+          if (!gameStartTime) {
+            try {
+              const mkt = await clob.getMarketByConditionId(p.conditionId);
+              if (mkt) {
+                endDate = mkt.end_date_iso ?? endDate;
+                gameStartTime = mkt.game_start_time ?? null;
+                queries.upsertMarketCache({
+                  conditionId: p.conditionId,
+                  endDate,
+                  gameStartTime,
+                });
+              }
+            } catch { /* non-fatal */ }
+          }
+        }
+
         try {
           const curPrice = await clob.getMidpoint(p.tokenId);
           // Persist MTM price so executor budget calc uses fresh data
           queries.setPositionPrice(p.tokenId, curPrice, Math.floor(Date.now() / 1000));
           const currentValue = p.totalShares * curPrice;
           const pnl = currentValue - p.totalInvested;
-          return { ...p, curPrice, currentValue, pnl, traderAddress, traderName };
+          return { ...p, curPrice, currentValue, pnl, traderAddress, traderName, endDate, gameStartTime };
         } catch {
-          return { ...p, curPrice: null, currentValue: null, pnl: null, traderAddress, traderName };
+          return { ...p, curPrice: null, currentValue: null, pnl: null, traderAddress, traderName, endDate, gameStartTime };
         }
       }),
     );

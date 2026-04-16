@@ -12,6 +12,7 @@ export interface ClobMarket {
   archived: boolean;
   accepting_orders: boolean;
   end_date_iso?: string;
+  game_start_time?: string;
   tokens: Array<{
     token_id: string;
     outcome: string;

@@ -524,6 +524,7 @@ export interface MarketCache {
   conditionId: string;
   createdAt: string | null;
   endDate: string | null;
+  gameStartTime: string | null;
   volume: number | null;
   liquidity: number | null;
   cachedAt: string;

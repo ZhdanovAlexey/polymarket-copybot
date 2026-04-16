@@ -288,6 +288,8 @@ export function runMigrations(db: Database.Database): void {
     'ALTER TABLE tracked_traders ADD COLUMN realized_win_rate REAL',
     'ALTER TABLE tracked_traders ADD COLUMN resolved_trades_count INTEGER DEFAULT 0',
     'ALTER TABLE tracked_traders ADD COLUMN confidence REAL DEFAULT 0',
+    // markets_cache: game_start_time
+    'ALTER TABLE markets_cache ADD COLUMN game_start_time TEXT',
     // Seed conviction_params singleton row
     `INSERT OR IGNORE INTO conviction_params (id, bet_base, f1_anchor, f1_max, w2, w3, f4_boost, source)
      VALUES (1, 1.0, 20.0, 5.0, 0.3, 0.5, 1.0, 'default')`,

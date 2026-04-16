@@ -210,7 +210,7 @@ function renderPositions(positions) {
   }
 
   if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No open positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No open positions</td></tr>';
     if (totalEl) totalEl.textContent = '--';
     return;
   }
@@ -230,6 +230,7 @@ function renderPositions(positions) {
           <td title="${escapeHtml(p.traderAddress || '')}">${escapeHtml(truncate(traderLabel, 14))}</td>
           <td title="${escapeHtml(p.marketTitle)}">${marketLink(p.marketSlug, p.marketTitle, 45)}</td>
           <td>${escapeHtml(p.outcome || '--')}</td>
+          <td title="${escapeHtml(p.gameStartTime || p.endDate || '')}">${formatEventTime(p.gameStartTime, p.endDate)}</td>
           <td>${(p.totalShares || 0).toFixed(2)}</td>
           <td>$${(p.avgPrice || 0).toFixed(4)}</td>
           <td>${curPriceStr}</td>
@@ -714,6 +715,44 @@ function formatOpenedTime(timestamp) {
   if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return `${months[d.getMonth()]} ${d.getDate()} ${hh}:${mm}`;
+}
+
+/**
+ * Format event/resolution time for Open Positions "Event" column.
+ * Shows relative time until the event (e.g. "in 3h", "Tomorrow 18:15").
+ * Prefers gameStartTime (when the match starts) over endDate (when market closes).
+ */
+function formatEventTime(gameStartTime, endDate) {
+  const raw = gameStartTime || endDate;
+  if (!raw) return '--';
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return '--';
+
+  const now = new Date();
+  const diffMs = d.getTime() - now.getTime();
+
+  // Already past
+  if (diffMs < 0) {
+    const agoH = Math.floor(-diffMs / 3_600_000);
+    if (agoH < 1) return 'Live';
+    if (agoH < 24) return `${agoH}h ago`;
+    return 'Ended';
+  }
+
+  const diffH = Math.floor(diffMs / 3_600_000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  if (diffH < 1) return `in ${Math.max(1, Math.floor(diffMs / 60_000))}m`;
+  if (d.toDateString() === now.toDateString()) return `Today ${hh}:${mm}`;
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return `Tmrw ${hh}:${mm}`;
+
+  if (diffH < 168) return `${months[d.getMonth()]} ${d.getDate()} ${hh}:${mm}`;
+  return `${months[d.getMonth()]} ${d.getDate()}`;
 }
 
 /* ---- Expandable position detail rows ---- */
