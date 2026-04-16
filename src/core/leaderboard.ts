@@ -47,6 +47,9 @@ export class Leaderboard {
     for (const entry of entries) {
       try {
         const trades = await this.dataApi.getTrades(entry.address, 100);
+        const lastTradeTs = trades.length > 0
+          ? Math.max(...trades.map((t) => t.timestamp))
+          : 0;
         const heuristicWinRate = this.calculateWinRate(trades);
 
         // Check DB for real win rate from resolved markets (written by backfill)
@@ -81,7 +84,7 @@ export class Leaderboard {
           winRate,
           score,
           tradesCount: trades.length,
-          lastSeenTimestamp: Math.floor(Date.now() / 1000),
+          lastSeenTimestamp: lastTradeTs || Math.floor(Date.now() / 1000),
           addedAt: new Date().toISOString(),
           active: true,
           exitOnly: false,
@@ -205,11 +208,23 @@ export class Leaderboard {
    * Filter traders by minimum activity thresholds
    */
   filterByActivity(traders: TrackedTrader[]): TrackedTrader[] {
+    const MAX_AGE_SECONDS = 7 * 24 * 3600; // 7 days
+    const now = Math.floor(Date.now() / 1000);
     return traders.filter((t) => {
       // Min volume filter (from config)
       if (config.minTraderVolume > 0 && t.volume < config.minTraderVolume) return false;
       // Min trades
       if (t.tradesCount < 3) return false;
+      // Recency: drop traders whose last trade is older than 7 days.
+      // Polymarket v1 leaderboard returns stale/cumulative PnL for inactive
+      // traders — this filter ensures we only copy people actually trading.
+      if (t.lastSeenTimestamp > 0 && now - t.lastSeenTimestamp > MAX_AGE_SECONDS) {
+        log.info(
+          { address: t.address, name: t.name, lastTradeSec: now - t.lastSeenTimestamp },
+          'Trader filtered out: no recent trades',
+        );
+        return false;
+      }
       return true;
     });
   }
