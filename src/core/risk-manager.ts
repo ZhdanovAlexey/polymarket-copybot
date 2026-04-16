@@ -101,8 +101,13 @@ export class RiskManager {
     equity: number,
     ourBetUsd: number,
   ): RiskCheckResult {
-    const marketCheck = this.checkMarketConcentration(trade.conditionId, positions);
-    if (!marketCheck.allowed) return marketCheck;
+    // Skip market concentration check if we're adding to an existing position
+    // on the same tokenId — that's a top-up, not a new position.
+    const isTopUp = positions.some((p) => p.tokenId === trade.tokenId && p.status === 'open');
+    if (!isTopUp) {
+      const marketCheck = this.checkMarketConcentration(trade.conditionId, positions);
+      if (!marketCheck.allowed) return marketCheck;
+    }
 
     const tokenCheck = this.checkTokenExposure(trade.tokenId, ourBetUsd, positions, equity);
     if (!tokenCheck.allowed) return tokenCheck;
