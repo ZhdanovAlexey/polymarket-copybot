@@ -462,6 +462,10 @@ export class Executor {
         // Save to DB
         queries.insertTrade(result);
         this.portfolio.updateAfterBuy(result);
+        if (commission > 0) {
+          const prev = parseFloat(queries.getSetting('demo_total_commission') ?? '0');
+          queries.setSetting('demo_total_commission', String(prev + commission));
+        }
         queries.insertActivity('trade', `DRY RUN BUY: ${trade.marketTitle} ${trade.outcome} - ${size.toFixed(2)} shares @ $${midpoint.toFixed(4)} (fee: $${commission.toFixed(2)})`);
 
         return result;
@@ -627,6 +631,10 @@ export class Executor {
 
         queries.insertTrade(result);
         this.portfolio.updateAfterSell(result);
+        if (commission > 0) {
+          const prev = parseFloat(queries.getSetting('demo_total_commission') ?? '0');
+          queries.setSetting('demo_total_commission', String(prev + commission));
+        }
         queries.insertActivity('trade', `DRY RUN SELL: ${trade.marketTitle} - ${size.toFixed(2)} shares @ $${bestBid.toFixed(4)} (P&L: $${pnl.toFixed(2)}, fee: $${commission.toFixed(2)})`);
 
         return result;
@@ -866,6 +874,10 @@ export class Executor {
         result.commission = commission;
         queries.insertTrade(result);
         this.portfolio.updateAfterSell(result);
+        if (commission > 0) {
+          const prev = parseFloat(queries.getSetting('demo_total_commission') ?? '0');
+          queries.setSetting('demo_total_commission', String(prev + commission));
+        }
         queries.insertActivity('trade', `DRY RUN SELL (exit): ${trade.marketTitle} - ${size.toFixed(2)} shares @ $${bestBid.toFixed(4)} (P&L: $${pnl.toFixed(2)})`);
         return result;
       }

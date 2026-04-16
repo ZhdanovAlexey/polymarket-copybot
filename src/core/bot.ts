@@ -541,6 +541,14 @@ export class Bot {
         : 0;
       const lockedInOpen = positions.reduce((s, p) => s + (p.totalInvested ?? 0), 0);
 
+      const unrealizedPnl = positions.reduce((s, p) => {
+        const mtm =
+          p.currentPrice !== null && p.currentPrice !== undefined
+            ? p.totalShares * p.currentPrice
+            : p.totalInvested;
+        return s + (mtm - p.totalInvested);
+      }, 0);
+
       const realizedPnl = config.dryRun
         ? balanceUsdc - initialBalance + lockedInOpen
         : completed
@@ -548,15 +556,17 @@ export class Bot {
             .reduce((sum, t) => sum + (t.totalUsd - t.originalTraderPrice * t.size), 0) -
           commission;
 
+      const totalPnl = realizedPnl + unrealizedPnl;
+
       queries.insertSnapshot({
-        totalPnl: realizedPnl,
-        unrealizedPnl: 0,
+        totalPnl,
+        unrealizedPnl,
         realizedPnl,
         balanceUsdc,
         openPositionsCount: positions.length,
       });
 
-      broadcastEvent('pnl_update', { totalPnl: realizedPnl, openPositionsCount: positions.length });
+      broadcastEvent('pnl_update', { totalPnl, openPositionsCount: positions.length });
     } catch (err) {
       log.error({ err }, 'PnL snapshot failed');
     }

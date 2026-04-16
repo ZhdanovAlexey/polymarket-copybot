@@ -16,6 +16,8 @@ export class TradeQueue {
   private activeCount = 0;
   private draining = false;
   private droppedStale = 0;
+  /** tokenIds with a SELL currently being executed — prevents race-condition duplicates */
+  private sellInFlight = new Set<string>();
 
   constructor(private processor: (trade: DetectedTrade) => Promise<TradeResult | void>) {}
 
@@ -27,6 +29,21 @@ export class TradeQueue {
     if (this.draining) {
       log.debug({ tradeId: trade.id }, 'Queue draining, ignoring new trade');
       return;
+    }
+
+    // Dedup: only one SELL per tokenId at a time (in-flight or queued).
+    // Tracker may emit multiple SELL events for the same token within
+    // milliseconds (trader's partial fills). Without this guard, concurrent
+    // execution sells the full position N times, inflating realized P&L.
+    if (trade.action === 'sell' && trade.tokenId) {
+      if (this.sellInFlight.has(trade.tokenId)) {
+        log.info({ tokenId: trade.tokenId, tradeId: trade.id }, 'SELL already in-flight, dropping duplicate');
+        return;
+      }
+      if (this.queue.some((q) => q.trade.action === 'sell' && q.trade.tokenId === trade.tokenId)) {
+        log.info({ tokenId: trade.tokenId, tradeId: trade.id }, 'SELL already queued, dropping duplicate');
+        return;
+      }
     }
 
     const priority = this.computePriority(trade);
@@ -103,8 +120,17 @@ export class TradeQueue {
     const item = this.queue.shift()!;
     this.activeCount++;
 
+    // Track in-flight SELL to prevent concurrent duplicate execution
+    const isSell = item.trade.action === 'sell' && !!item.trade.tokenId;
+    if (isSell) {
+      this.sellInFlight.add(item.trade.tokenId);
+    }
+
     this.processor(item.trade)
       .finally(() => {
+        if (isSell) {
+          this.sellInFlight.delete(item.trade.tokenId);
+        }
         this.activeCount--;
         this.processNext();
       });
