@@ -1,0 +1,19 @@
+{
+  "name": "mirror",
+  "port": 3004,
+  "settings": {
+    "bet_size_usd": "3",
+    "max_single_bet_usd": "5",
+    "stop_loss_mode": "trailing",
+    "trailing_stop_pct": "15",
+    "top_traders_count": "3",
+    "max_slippage_pct": "15",
+    "max_spread_pct": "15",
+    "sell_mode": "mirror",
+    "take_profit_pct": "80",
+    "demo_initial_balance": "200",
+    "demo_commission_pct": "0.5",
+    "dry_run": "true",
+    "max_open_positions": "40"
+  }
+}
