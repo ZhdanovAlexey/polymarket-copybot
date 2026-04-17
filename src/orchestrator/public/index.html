@@ -12,8 +12,8 @@
   <header>
     <h1>CopyBot Orchestrator</h1>
     <div class="header-controls">
-      <button id="btn-start-all" class="btn btn-green">Start All</button>
-      <button id="btn-stop-all" class="btn btn-red">Stop All</button>
+      <button id="btn-start-all" class="btn btn-green">Start All Bots</button>
+      <button id="btn-stop-all" class="btn btn-red">Stop All Bots</button>
     </div>
   </header>
 
@@ -42,18 +42,22 @@
       <h2>PnL Comparison</h2>
       <canvas id="pnl-chart" height="300"></canvas>
     </section>
-
-    <section id="bot-detail" class="hidden">
-      <h2>Settings: <span id="detail-bot-name"></span></h2>
-      <div id="detail-settings"></div>
-      <div class="detail-controls">
-        <button id="btn-bot-start-trading" class="btn btn-green">Start Trading</button>
-        <button id="btn-bot-stop-trading" class="btn btn-red">Stop Trading</button>
-        <button id="btn-save-settings" class="btn btn-blue">Save Settings</button>
-        <a id="link-full-dashboard" href="#" target="_blank" class="btn btn-outline">Open Full Dashboard</a>
-      </div>
-    </section>
   </main>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Settings: <span id="modal-bot-name"></span></h2>
+        <button id="modal-close" class="modal-close-btn" title="Close">&times;</button>
+      </div>
+      <div id="modal-settings-body" class="modal-body"></div>
+      <div class="modal-footer">
+        <button id="btn-modal-save" class="btn btn-blue">Save Settings</button>
+        <button id="btn-modal-cancel" class="btn btn-outline">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="/js/app.js"></script>
 </body>

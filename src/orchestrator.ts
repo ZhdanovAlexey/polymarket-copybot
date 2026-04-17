@@ -190,14 +190,16 @@ function createOrchestratorServer(): express.Express {
     res.json({ ok: true, message: `Bot ${name} restarting` });
   });
 
-  // Proxy to bot APIs (settings, bot control, pnl-history)
-  app.all('/api/bots/:name/proxy/{*path}', async (req: express.Request, res: express.Response) => {
+  // Proxy to bot APIs — extract target path from URL to avoid Express 5 wildcard issues
+  app.use('/api/bots/:name/proxy', async (req: express.Request, res: express.Response) => {
     const inst = bots.get(String(req.params.name));
     if (!inst) return void res.status(404).json({ error: 'Bot not found' });
     if (inst.status !== 'running') return void res.status(503).json({ error: 'Bot not running' });
 
-    const targetPath = (req.params as Record<string, string>).path ?? '';
-    const url = `http://localhost:${inst.config.port}/api/${targetPath}`;
+    // Extract the path after /proxy/ from the original URL
+    const proxyPrefix = `/api/bots/${String(req.params.name)}/proxy/`;
+    const afterProxy = req.originalUrl.slice(req.originalUrl.indexOf(proxyPrefix) + proxyPrefix.length);
+    const url = `http://localhost:${inst.config.port}/api/${afterProxy}`;
 
     try {
       const controller = new AbortController();
@@ -216,6 +218,49 @@ function createOrchestratorServer(): express.Express {
       res.status(proxyRes.status).json(data);
     } catch (err) {
       res.status(502).json({ error: 'Bot unreachable', detail: String(err) });
+    }
+  });
+
+  // Reverse proxy: /bots/:name/* → bot's dashboard (HTML + static + API)
+  app.use('/bots/:name', async (req: express.Request, res: express.Response) => {
+    const inst = bots.get(String(req.params.name));
+    if (!inst) return void res.status(404).send('Bot not found');
+    if (inst.status !== 'running') return void res.status(503).send('Bot not running');
+
+    // Strip /bots/:name prefix to get the path the bot expects
+    const prefix = `/bots/${String(req.params.name)}`;
+    const targetPath = req.originalUrl.slice(req.originalUrl.indexOf(prefix) + prefix.length) || '/';
+    const url = `http://localhost:${inst.config.port}${targetPath}`;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const fetchOpts: RequestInit = {
+        method: req.method,
+        signal: controller.signal,
+      };
+      // Forward JSON body for POST/PUT
+      if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers['content-type']?.includes('json')) {
+        fetchOpts.headers = { 'Content-Type': 'application/json' };
+        fetchOpts.body = JSON.stringify(req.body);
+      }
+      const proxyRes = await fetch(url, fetchOpts);
+      clearTimeout(timeout);
+
+      // Forward content-type from bot response
+      const ct = proxyRes.headers.get('content-type') ?? 'application/octet-stream';
+      res.status(proxyRes.status).set('content-type', ct);
+
+      if (ct.includes('json')) {
+        const data = await proxyRes.json();
+        res.json(data);
+      } else {
+        // HTML, CSS, JS — forward as text/buffer
+        const body = await proxyRes.text();
+        res.send(body);
+      }
+    } catch (err) {
+      res.status(502).send(`Bot unreachable: ${String(err)}`);
     }
   });
 
