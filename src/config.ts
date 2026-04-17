@@ -23,6 +23,7 @@ const configSchema = z.object({
 
   // Trading
   betSizeUsd: z.coerce.number().default(5),
+  maxSingleBetUsd: z.coerce.number().default(5),
   betSizingMode: z.enum(['fixed', 'proportional']).default('proportional'),
   betScaleAnchorUsd: z.coerce.number().default(100),
   betScaleMaxMul: z.coerce.number().default(5),
@@ -32,6 +33,7 @@ const configSchema = z.object({
   topTradersCount: z.coerce.number().default(10),
   leaderboardPeriod: z.string().default('WEEK'),
   redeemCheckIntervalMs: z.coerce.number().default(300000),
+  deadPositionPriceThreshold: z.coerce.number().default(0.01),
   maxSlippagePct: z.coerce.number().default(5),
   sellMode: z.string().default('mirror'),
   dryRun: z.coerce.boolean().default(true),
@@ -147,6 +149,7 @@ function loadConfig(): AppConfig {
     gammaApiHost: process.env.GAMMA_API_HOST,
     polygonRpcUrl: process.env.POLYGON_RPC_URL,
     betSizeUsd: process.env.BET_SIZE_USD,
+    maxSingleBetUsd: process.env.MAX_SINGLE_BET_USD,
     betSizingMode: process.env.BET_SIZING_MODE,
     betScaleAnchorUsd: process.env.BET_SCALE_ANCHOR_USD,
     betScaleMaxMul: process.env.BET_SCALE_MAX_MUL,
@@ -156,6 +159,7 @@ function loadConfig(): AppConfig {
     topTradersCount: process.env.TOP_TRADERS_COUNT,
     leaderboardPeriod: process.env.LEADERBOARD_PERIOD,
     redeemCheckIntervalMs: process.env.REDEEM_CHECK_INTERVAL_MS,
+    deadPositionPriceThreshold: process.env.DEAD_POSITION_PRICE_THRESHOLD,
     maxSlippagePct: process.env.MAX_SLIPPAGE_PCT,
     sellMode: process.env.SELL_MODE,
     dryRun: process.env.DRY_RUN,
@@ -250,6 +254,7 @@ export const config = loadConfig();
 export function reloadConfigFromDb(getSetting: (key: string) => string | undefined): void {
   const numMap: Record<string, string> = {
     betSizeUsd: 'bet_size_usd',
+    maxSingleBetUsd: 'max_single_bet_usd',
     betScaleAnchorUsd: 'bet_scale_anchor_usd',
     betScaleMaxMul: 'bet_scale_max_mul',
     betScaleMinMul: 'bet_scale_min_mul',
@@ -260,6 +265,7 @@ export function reloadConfigFromDb(getSetting: (key: string) => string | undefin
     maxOpenPositions: 'max_open_positions',
     minMarketLiquidity: 'min_market_liquidity',
     redeemCheckIntervalMs: 'redeem_check_interval_ms',
+    deadPositionPriceThreshold: 'dead_position_price_threshold',
     demoInitialBalanceUsd: 'demo_initial_balance',
     demoCommissionPct: 'demo_commission_pct',
     // Phase 1 additions

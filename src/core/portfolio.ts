@@ -45,7 +45,7 @@ export class Portfolio extends EventEmitter {
   updateAfterBuy(trade: TradeResult): void {
     const existing = queries.getPositionByTokenId(trade.tokenId);
 
-    if (existing) {
+    if (existing && existing.status === 'open') {
       // Update: recalculate avg price
       const totalShares = existing.totalShares + trade.size;
       const totalInvested = existing.totalInvested + trade.totalUsd;
@@ -89,12 +89,13 @@ export class Portfolio extends EventEmitter {
    */
   updateAfterSell(trade: TradeResult): void {
     const existing = queries.getPositionByTokenId(trade.tokenId);
-    if (!existing) {
-      log.warn({ tokenId: trade.tokenId }, 'No position found for SELL');
+    if (!existing || existing.status !== 'open') {
+      log.warn({ tokenId: trade.tokenId }, 'No open position found for SELL');
       return;
     }
 
-    const remainingShares = existing.totalShares - trade.size;
+    const sellSize = Math.min(trade.size, existing.totalShares);
+    const remainingShares = existing.totalShares - sellSize;
 
     if (remainingShares <= 0.001) {
       // Close position

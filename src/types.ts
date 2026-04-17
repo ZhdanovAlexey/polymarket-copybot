@@ -123,6 +123,7 @@ export interface TrackedTrader {
   realizedWinRate?: number | null;
   resolvedTradesCount?: number;
   confidence?: number;
+  convictionScalar?: number;
 }
 
 export interface DetectedTrade {
@@ -222,6 +223,7 @@ export interface AppConfig {
   polygonRpcUrl: string;
   // Trading
   betSizeUsd: number;
+  maxSingleBetUsd: number;
   betSizingMode: 'fixed' | 'proportional';
   betScaleAnchorUsd: number;
   betScaleMaxMul: number;
@@ -231,6 +233,7 @@ export interface AppConfig {
   topTradersCount: number;
   leaderboardPeriod: string;
   redeemCheckIntervalMs: number;
+  deadPositionPriceThreshold: number;
   maxSlippagePct: number;
   sellMode: string;
   dryRun: boolean;

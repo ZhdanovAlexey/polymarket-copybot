@@ -308,8 +308,8 @@ async function main(): Promise<void> {
   // Spawn all bots
   for (const inst of bots.values()) {
     spawnBot(inst);
-    // Stagger spawns by 2 seconds to avoid API rate limits
-    await new Promise((r) => setTimeout(r, 2000));
+    // Stagger spawns by 10 seconds so polling cycles don't overlap
+    await new Promise((r) => setTimeout(r, 10_000));
   }
 
   // Start metrics polling

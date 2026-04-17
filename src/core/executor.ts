@@ -33,6 +33,11 @@ export class Executor {
   private exitStrategy: ExitStrategy;
   readonly twapExecutor: TwapExecutor;
 
+  /** Per-token BUY cooldown: tokenId → timestamp of last executed BUY */
+  private lastBuyAt: Map<string, number> = new Map();
+  /** Minimum ms between consecutive BUYs on the same tokenId (default 60s) */
+  private static readonly BUY_COOLDOWN_MS = 60_000;
+
   constructor(riskManager?: RiskManager, portfolio?: Portfolio, healthChecker?: HealthChecker) {
     this.riskManager = riskManager ?? new RiskManager();
     this.portfolio = portfolio ?? new Portfolio();
@@ -226,7 +231,10 @@ export class Executor {
         marketAgeHours,
       });
 
-      if (bet > 0) return bet;
+      if (bet > 0) {
+        const scalar = traderRec?.convictionScalar ?? 1.0;
+        return bet * scalar;
+      }
     } catch (err) {
       log.warn({ err }, 'computeConvictionBet failed, falling back to computeBetSize');
     }
@@ -243,6 +251,14 @@ export class Executor {
       outcome: trade.outcome,
       traderPrice: trade.price,
     }, 'Processing BUY signal');
+
+    // 0. Per-token BUY cooldown — prevent rapid-fire duplicate copies
+    const lastBuy = this.lastBuyAt.get(trade.tokenId);
+    if (lastBuy && Date.now() - lastBuy < Executor.BUY_COOLDOWN_MS) {
+      const remainSec = ((Executor.BUY_COOLDOWN_MS - (Date.now() - lastBuy)) / 1000).toFixed(0);
+      log.info({ tokenId: trade.tokenId, remainSec }, 'BUY cooldown active, skipping');
+      return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0, `buy_cooldown:${remainSec}s`);
+    }
 
     // 1. Risk check
     const riskCheck = this.riskManager.canTrade(trade);
@@ -277,6 +293,7 @@ export class Executor {
       let midpoint: number;
       let liquidityChecked = false;
       let totalUsd = await this.computeConvictionBet(trade);
+      totalUsd = Math.min(totalUsd, config.maxSingleBetUsd);
 
       if (config.minMarketLiquidity > 0 || config.maxSpreadPct > 0) {
         try {
@@ -427,6 +444,7 @@ export class Executor {
           return this.createResult(trade, 'BUY', 'failed', midpoint, 0, 0, 'TWAP: all slices failed/drifted');
         }
 
+        this.lastBuyAt.set(trade.tokenId, Date.now());
         const twapSize = twapResult.avgPrice > 0 ? twapResult.totalFilled / twapResult.avgPrice : 0;
         return this.createResult(trade, 'BUY', 'simulated', twapResult.avgPrice, twapSize, twapResult.totalFilled);
       }
@@ -462,6 +480,7 @@ export class Executor {
         // Save to DB
         queries.insertTrade(result);
         this.portfolio.updateAfterBuy(result);
+        this.lastBuyAt.set(trade.tokenId, Date.now());
         if (commission > 0) {
           const prev = parseFloat(queries.getSetting('demo_total_commission') ?? '0');
           queries.setSetting('demo_total_commission', String(prev + commission));
@@ -544,6 +563,7 @@ export class Executor {
       queries.insertTrade(result);
       if (fillStatus === 'filled' || fillStatus === 'partial') {
         this.portfolio.updateAfterBuy(result);
+        this.lastBuyAt.set(trade.tokenId, Date.now());
       }
       queries.insertActivity(
         'trade',

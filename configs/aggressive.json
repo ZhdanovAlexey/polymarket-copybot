@@ -13,6 +13,7 @@
     "demo_initial_balance": "200",
     "demo_commission_pct": "0.5",
     "dry_run": "true",
-    "max_open_positions": "50"
+    "max_open_positions": "50",
+    "poll_interval_ms": "60000"
   }
 }

@@ -48,6 +48,7 @@ export class Bot {
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private rotationTimer: ReturnType<typeof setInterval> | null = null;
   private weightsRecalcTimer: ReturnType<typeof setInterval> | null = null;
+  private convictionScalarTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.leaderboard = new Leaderboard();
@@ -191,6 +192,11 @@ export class Bot {
         this.savePnlSnapshot();
       }, 300_000);
 
+      // 5b. Recalculate per-trader conviction scalars (every 2 hours)
+      this.convictionScalarTimer = setInterval(() => {
+        this.recalcConvictionScalars();
+      }, 7_200_000);
+
       // 6. Schedule mark-to-market (every 60s) + stop-loss + drawdown checks
       this.mtmTimer = setInterval(async () => {
         try {
@@ -273,6 +279,10 @@ export class Bot {
     if (this.pnlSnapshotTimer) {
       clearInterval(this.pnlSnapshotTimer);
       this.pnlSnapshotTimer = null;
+    }
+    if (this.convictionScalarTimer) {
+      clearInterval(this.convictionScalarTimer);
+      this.convictionScalarTimer = null;
     }
     if (this.mtmTimer) {
       clearInterval(this.mtmTimer);
@@ -569,6 +579,42 @@ export class Bot {
       broadcastEvent('pnl_update', { totalPnl, openPositionsCount: positions.length });
     } catch (err) {
       log.error({ err }, 'PnL snapshot failed');
+    }
+  }
+
+  /**
+   * Recalculate per-trader conviction scalars based on realized win rate.
+   * scalar = clamp(0.5 + winRate, 0.3, 2.0)
+   * Requires ≥5 closed positions attributed to the trader; otherwise scalar = 1.0.
+   */
+  private recalcConvictionScalars(): void {
+    try {
+      const closedPositions = queries.getClosedPositions(10000);
+      const traders = queries.getActiveTraders();
+
+      for (const trader of traders) {
+        // Find closed positions opened by this trader
+        const traderPositions = closedPositions.filter(
+          (p) => p.traderAddress === trader.address,
+        );
+
+        if (traderPositions.length < 5) {
+          queries.setConvictionScalar(trader.address, 1.0);
+          continue;
+        }
+
+        const wins = traderPositions.filter((p) => p.realizedPnl > 0).length;
+        const winRate = wins / traderPositions.length;
+        const scalar = Math.min(2.0, Math.max(0.3, 0.5 + winRate));
+
+        queries.setConvictionScalar(trader.address, scalar);
+        log.info(
+          { trader: trader.name, winRate: winRate.toFixed(2), scalar: scalar.toFixed(2), closedCount: traderPositions.length },
+          'Conviction scalar updated',
+        );
+      }
+    } catch (err) {
+      log.error({ err }, 'Conviction scalar recalculation failed');
     }
   }
 }

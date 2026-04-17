@@ -184,7 +184,14 @@ function mapTraderRow(row: Record<string, unknown>): TrackedTrader {
     realizedWinRate: row.realized_win_rate !== undefined ? (row.realized_win_rate as number | null) : undefined,
     resolvedTradesCount: row.resolved_trades_count !== undefined ? (row.resolved_trades_count as number) : undefined,
     confidence: row.confidence !== undefined ? (row.confidence as number) : undefined,
+    convictionScalar: row.conviction_scalar !== undefined ? (row.conviction_scalar as number) : 1.0,
   };
+}
+
+export function setConvictionScalar(address: string, scalar: number): void {
+  getDb()
+    .prepare('UPDATE tracked_traders SET conviction_scalar = ? WHERE address = ?')
+    .run(scalar, address);
 }
 
 // ============================================================
@@ -247,6 +254,24 @@ export function getTrades(options?: {
 
   const rows = getDb().prepare(sql).all(...params) as Array<Record<string, unknown>>;
   return rows.map(mapTradeRow);
+}
+
+export function getTradesCount(status?: string): number {
+  if (status) {
+    const row = getDb()
+      .prepare('SELECT COUNT(*) as cnt FROM trades WHERE status = ?')
+      .get(status) as { cnt: number };
+    return row.cnt;
+  }
+  const row = getDb().prepare('SELECT COUNT(*) as cnt FROM trades').get() as { cnt: number };
+  return row.cnt;
+}
+
+export function getTotalCommission(): number {
+  const row = getDb()
+    .prepare("SELECT COALESCE(SUM(commission), 0) as total FROM trades WHERE status IN ('filled','simulated')")
+    .get() as { total: number };
+  return row.total;
 }
 
 export function getTradesByTrader(traderAddress: string, limit = 50): TradeResult[] {

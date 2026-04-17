@@ -15,6 +15,7 @@ const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 
 export class Redeemer {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private isRunning = false;
   private dataApi: DataApi;
 
   constructor() {
@@ -43,6 +44,19 @@ export class Redeemer {
   }
 
   private async checkAndRedeem(): Promise<void> {
+    if (this.isRunning) {
+      log.debug('Redeem check already in progress, skipping');
+      return;
+    }
+    this.isRunning = true;
+    try {
+      await this.checkAndRedeemInner();
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  private async checkAndRedeemInner(): Promise<void> {
     // Demo mode uses a different pipeline: we don't have on-chain positions,
     // so instead we inspect our local open positions and check each market's
     // resolution status via Gamma + CLOB midpoint.
@@ -124,7 +138,23 @@ export class Redeemer {
         }
 
         const market = await clob.getMarketByConditionId(pos.conditionId);
-        if (!market || !market.closed) continue;
+        if (!market || !market.closed) {
+          // Dead position write-off: price collapsed but market not formally closed
+          if (
+            pos.currentPrice !== null &&
+            pos.currentPrice !== undefined &&
+            pos.currentPrice <= config.deadPositionPriceThreshold &&
+            pos.avgPrice > 0.05
+          ) {
+            log.info(
+              { tokenId: pos.tokenId, outcome: pos.outcome, invested: pos.totalInvested, price: pos.currentPrice },
+              'Dead position written off (price below threshold)',
+            );
+            this.applyDemoRedeem(pos, 0, false);
+            redeemedCount++;
+          }
+          continue;
+        }
 
         const ourToken = market.tokens.find((t) => t.token_id === pos.tokenId);
         if (!ourToken) {
@@ -161,6 +191,13 @@ export class Redeemer {
   }
 
   private applyDemoRedeem(pos: BotPosition, payout: number, isWinner: boolean): void {
+    // Guard against duplicate redemption from overlapping runs
+    const current = queries.getPositionByTokenId(pos.tokenId);
+    if (!current || current.status !== 'open') {
+      log.debug({ tokenId: pos.tokenId }, 'Position already redeemed, skipping');
+      return;
+    }
+
     const newBalance = queries.getDemoBalance() + payout;
     queries.setDemoBalance(newBalance);
 

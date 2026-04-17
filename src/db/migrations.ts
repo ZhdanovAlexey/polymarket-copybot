@@ -293,6 +293,8 @@ export function runMigrations(db: Database.Database): void {
     // Seed conviction_params singleton row
     `INSERT OR IGNORE INTO conviction_params (id, bet_base, f1_anchor, f1_max, w2, w3, f4_boost, source)
      VALUES (1, 1.0, 20.0, 5.0, 0.3, 0.5, 1.0, 'default')`,
+    // Per-trader conviction scalar
+    'ALTER TABLE tracked_traders ADD COLUMN conviction_scalar REAL DEFAULT 1.0',
   ];
   for (const sql of schemaUpdates) {
     try { db.exec(sql); } catch { /* column already exists or row already seeded */ }

@@ -140,6 +140,10 @@ export class ClobClientWrapper {
 
     try {
       const res = await fetchWithRetry(url);
+      if (res.status === 404) {
+        log.warn({ tokenId }, 'Token not found on CLOB (404), returning NaN');
+        return NaN;
+      }
       if (!res.ok) {
         throw new Error(`CLOB API responded with ${res.status}: ${res.statusText}`);
       }
@@ -182,6 +186,10 @@ export class ClobClientWrapper {
 
     try {
       const res = await fetchWithRetry(url);
+      if (res.status === 404) {
+        log.warn({ tokenId }, 'Order book not found on CLOB (404)');
+        return { bids: [], asks: [], hash: '', timestamp: '', market: '', asset_id: '' } as unknown as OrderBookResponse;
+      }
       if (!res.ok) {
         throw new Error(`CLOB API responded with ${res.status}: ${res.statusText}`);
       }
