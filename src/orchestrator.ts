@@ -255,10 +255,27 @@ function createOrchestratorServer(): express.Express {
         const data = await proxyRes.json();
         res.json(data);
       } else if (ct.includes('html')) {
-        // Inject <base> tag so root-relative URLs resolve under /bots/:name/
+        // Rewrite root-relative URLs in HTML so assets/API load through the proxy
         let html = await proxyRes.text();
-        const basePath = `/bots/${String(req.params.name)}/`;
-        html = html.replace('<head>', `<head><base href="${basePath}">`);
+        const bp = `/bots/${String(req.params.name)}`;
+
+        // Rewrite href="/..." and src="/..." attributes
+        html = html.replace(/(href|src|action)="\/(?!\/)/g, `$1="${bp}/`);
+
+        // Inject fetch/EventSource interceptor so JS API calls go through proxy
+        const interceptor = `<script>
+(function(){
+  var bp="${bp}";
+  var _f=window.fetch;
+  window.fetch=function(u,o){
+    if(typeof u==="string"&&u.startsWith("/"))u=bp+u;
+    return _f.call(this,u,o);
+  };
+  var _ES=window.EventSource;
+  window.EventSource=function(u,o){if(typeof u==="string"&&u.startsWith("/"))u=bp+u;return new _ES(u,o);};
+})();
+</script>`;
+        html = html.replace('<head>', '<head>' + interceptor);
         res.send(html);
       } else {
         // CSS, JS, images — forward as-is
