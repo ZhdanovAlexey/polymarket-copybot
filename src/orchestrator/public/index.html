@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CopyBot Orchestrator</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+</head>
+<body>
+  <header>
+    <h1>CopyBot Orchestrator</h1>
+    <div class="header-controls">
+      <button id="btn-start-all" class="btn btn-green">Start All</button>
+      <button id="btn-stop-all" class="btn btn-red">Stop All</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="comparison-table">
+      <h2>Bot Comparison</h2>
+      <table id="bots-table">
+        <thead>
+          <tr>
+            <th>Bot</th>
+            <th>Status</th>
+            <th>Total PnL</th>
+            <th>Win Rate</th>
+            <th>Trades</th>
+            <th>Open Pos</th>
+            <th>Balance</th>
+            <th>Today PnL</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="bots-tbody"></tbody>
+      </table>
+    </section>
+
+    <section id="pnl-chart-section">
+      <h2>PnL Comparison</h2>
+      <canvas id="pnl-chart" height="300"></canvas>
+    </section>
+
+    <section id="bot-detail" class="hidden">
+      <h2>Settings: <span id="detail-bot-name"></span></h2>
+      <div id="detail-settings"></div>
+      <div class="detail-controls">
+        <button id="btn-bot-start-trading" class="btn btn-green">Start Trading</button>
+        <button id="btn-bot-stop-trading" class="btn btn-red">Stop Trading</button>
+        <button id="btn-save-settings" class="btn btn-blue">Save Settings</button>
+        <a id="link-full-dashboard" href="#" target="_blank" class="btn btn-outline">Open Full Dashboard</a>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
