@@ -1,13 +1,10 @@
-import { readFileSync, existsSync } from 'node:fs';
 import { config } from './config.js';
-import { reloadConfigFromDb } from './config.js';
 import { initDb, closeDb } from './db/database.js';
 import { createLogger } from './utils/logger.js';
 import { Bot } from './core/bot.js';
 import { startDashboard } from './dashboard/server.js';
 import { setBot } from './dashboard/routes/api.js';
 import { setBot as setAuthBot } from './dashboard/routes/auth.js';
-import * as queries from './db/queries.js';
 
 const log = createLogger('main');
 
@@ -30,21 +27,6 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDb();
-
-  // Apply config overrides from BOT_CONFIG JSON (for multi-bot runner)
-  const configPath = process.env.BOT_CONFIG;
-  if (configPath && existsSync(configPath)) {
-    const overrides = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (overrides.settings) {
-      for (const [key, value] of Object.entries(overrides.settings)) {
-        queries.setSetting(key, String(value));
-      }
-      log.info({ config: configPath, keys: Object.keys(overrides.settings) }, 'Applied config overrides from JSON');
-    }
-  }
-
-  // Always reload config from DB to pick up persisted settings
-  reloadConfigFromDb(queries.getSetting);
 
   // Create Bot instance
   bot = new Bot();

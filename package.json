@@ -7,8 +7,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc && cp -r src/dashboard/public dist/dashboard/public",
-    "start": "node dist/index.js",
-    "orchestrator": "tsx src/orchestrator.ts"
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "",
