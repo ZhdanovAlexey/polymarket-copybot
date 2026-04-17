@@ -254,8 +254,14 @@ function createOrchestratorServer(): express.Express {
       if (ct.includes('json')) {
         const data = await proxyRes.json();
         res.json(data);
+      } else if (ct.includes('html')) {
+        // Inject <base> tag so root-relative URLs resolve under /bots/:name/
+        let html = await proxyRes.text();
+        const basePath = `/bots/${String(req.params.name)}/`;
+        html = html.replace('<head>', `<head><base href="${basePath}">`);
+        res.send(html);
       } else {
-        // HTML, CSS, JS — forward as text/buffer
+        // CSS, JS, images — forward as-is
         const body = await proxyRes.text();
         res.send(body);
       }
