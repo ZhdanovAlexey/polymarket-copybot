@@ -12,6 +12,7 @@ data/*.db-journal
 data/*.log
 data/*.log.*
 data/copybot.log.old*
+data/*/
 
 # Environment
 .env
