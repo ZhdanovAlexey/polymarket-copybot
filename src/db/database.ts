@@ -8,7 +8,9 @@ import { runMigrations } from './migrations.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_ROOT = resolve(__dirname, '..', '..');
-const DATA_DIR = resolve(PROJECT_ROOT, 'data');
+const DATA_DIR = process.env.BOT_DATA_DIR
+  ? resolve(process.env.BOT_DATA_DIR)
+  : resolve(PROJECT_ROOT, 'data');
 const DB_PATH = resolve(DATA_DIR, 'copybot.db');
 
 const log = createLogger('database');
