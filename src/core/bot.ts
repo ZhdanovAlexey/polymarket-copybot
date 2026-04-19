@@ -41,6 +41,8 @@ export class Bot {
 
   private status: BotStatus = 'idle';
   private startTime: number | null = null;
+  /** Consecutive market-filter skips per trader — auto-drop when threshold exceeded. */
+  private filterSkipCount = new Map<string, number>();
   private leaderboardRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private pnlSnapshotTimer: ReturnType<typeof setInterval> | null = null;
   private stopLossQueueTimer: ReturnType<typeof setInterval> | null = null;
@@ -421,11 +423,34 @@ export class Bot {
         size: result.size,
       }, 'Trade processed');
 
+      // Auto-drop traders whose signals are all filtered out (e.g. sports-only
+      // traders when market_exclude_keywords is active). After N consecutive
+      // filtered BUYs, deactivate the trader to stop wasting poll cycles.
+      if (result.side === 'BUY' && result.error?.startsWith('market_excluded:')) {
+        const addr = trade.traderAddress;
+        const count = (this.filterSkipCount.get(addr) ?? 0) + 1;
+        this.filterSkipCount.set(addr, count);
+        if (count >= config.marketFilterAutoDropAfter) {
+          const openCount = queries.countOpenPositionsFromTrader(addr);
+          if (openCount > 0) {
+            queries.setExitOnly(addr);
+            log.info({ trader: trade.traderName, skips: count }, 'Trader moved to exit-only: all signals filtered');
+          } else {
+            queries.deactivateTraderFully(addr);
+            log.info({ trader: trade.traderName, skips: count }, 'Trader deactivated: all signals filtered');
+          }
+          this.filterSkipCount.delete(addr);
+          this.tracker.initialize(queries.getTrackedForPolling());
+          queries.insertActivity('rotation', `Auto-dropped ${trade.traderName}: ${count} consecutive filtered signals`);
+        }
+      }
+
       // Probation countdown for successful BUYs
       if (
         trade.action === 'buy' &&
         (result.status === 'simulated' || result.status === 'filled')
       ) {
+        this.filterSkipCount.delete(trade.traderAddress); // reset on success
         this.rotation.handleProbationTrade(trade.traderAddress, result);
       }
 

@@ -110,6 +110,8 @@ const configSchema = z.object({
 
   // Market filter — exclude categories by slug/title keywords (comma-separated)
   marketExcludeKeywords: z.string().default(''),
+  // Auto-drop traders after N consecutive filtered BUYs (0 = disabled)
+  marketFilterAutoDropAfter: z.coerce.number().default(50),
 
   // Execution — TWAP
   twapThresholdUsd: z.coerce.number().default(50),
@@ -312,6 +314,7 @@ export function reloadConfigFromDb(getSetting: (key: string) => string | undefin
     partialScaleOutThreshold: 'partial_scale_out_threshold',
     maxConcurrentExecutions: 'max_concurrent_executions',
     tradeQueueStaleMinutes: 'trade_queue_stale_minutes',
+    marketFilterAutoDropAfter: 'market_filter_auto_drop_after',
   };
 
   const stringMap: Record<string, string> = {

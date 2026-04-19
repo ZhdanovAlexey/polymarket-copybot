@@ -302,6 +302,7 @@ export interface AppConfig {
   minResolvedTradesForRealWinRate: number;
   // Market filter
   marketExcludeKeywords: string;
+  marketFilterAutoDropAfter: number;
   // Execution — TWAP
   twapThresholdUsd: number;
   twapSlices: number;
