@@ -362,7 +362,7 @@ export interface ClosedPositionRow extends BotPosition {
   closeUsd: number;         // total USD received from SELL + REDEEM trades
   closeSize: number;        // total shares exited
   closeAvgPrice: number;    // closeUsd / closeSize (0 if no exit trades)
-  realizedPnl: number;      // closeUsd − totalInvested
+  realizedPnl: number;      // total sold/redeemed − total bought (all cycles)
   closedAt: string | null;  // most recent SELL/REDEEM timestamp
   traderAddress: string;    // trader whose BUY opened this position
   traderName: string;
@@ -372,6 +372,11 @@ export interface ClosedPositionRow extends BotPosition {
  * Round-trip view for closed + redeemed positions, enriched with the aggregate
  * close price, received USD, and realized P&L. Used by Dashboard "Closed
  * Positions" section.
+ *
+ * NOTE: realizedPnl is computed from trade history (total sold − total bought)
+ * rather than close_usd − position.total_invested, because positions that get
+ * re-opened (sold then bought again on the same token_id) reset total_invested
+ * in the positions table while historical sell trades remain.
  */
 export function getClosedPositions(limit = 200): ClosedPositionRow[] {
   const rows = getDb()
@@ -379,15 +384,18 @@ export function getClosedPositions(limit = 200): ClosedPositionRow[] {
       `SELECT p.*,
               COALESCE(SUM(CASE WHEN t.side IN ('SELL','REDEEM') THEN t.total_usd END), 0) AS close_usd,
               COALESCE(SUM(CASE WHEN t.side IN ('SELL','REDEEM') THEN t.size END), 0) AS close_size,
+              COALESCE(SUM(CASE WHEN t.side = 'BUY' THEN t.total_usd END), 0) AS total_bought,
               MAX(CASE WHEN t.side IN ('SELL','REDEEM') THEN t.timestamp END) AS closed_at,
-              (SELECT ob.trader_address FROM trades ob
-                 WHERE ob.token_id = p.token_id AND ob.side = 'BUY'
-                 ORDER BY ob.timestamp ASC LIMIT 1) AS trader_address,
-              (SELECT ob.trader_name FROM trades ob
-                 WHERE ob.token_id = p.token_id AND ob.side = 'BUY'
-                 ORDER BY ob.timestamp ASC LIMIT 1) AS trader_name
+              opener.trader_address AS trader_address,
+              opener.trader_name AS trader_name
          FROM positions p
          LEFT JOIN trades t ON t.token_id = p.token_id
+              AND t.status = 'simulated'
+         LEFT JOIN (
+           SELECT token_id, trader_address, trader_name,
+                  ROW_NUMBER() OVER (PARTITION BY token_id ORDER BY timestamp ASC) AS rn
+           FROM trades WHERE side = 'BUY'
+         ) opener ON opener.token_id = p.token_id AND opener.rn = 1
         WHERE p.status IN ('closed','redeemed')
         GROUP BY p.id
         ORDER BY closed_at DESC
@@ -399,17 +407,33 @@ export function getClosedPositions(limit = 200): ClosedPositionRow[] {
     const base = mapPositionRow(row);
     const closeUsd = Number(row.close_usd ?? 0);
     const closeSize = Number(row.close_size ?? 0);
+    const totalBought = Number(row.total_bought ?? 0);
     return {
       ...base,
+      totalInvested: totalBought > 0 ? totalBought : base.totalInvested,
       closeUsd,
       closeSize,
       closeAvgPrice: closeSize > 0 ? closeUsd / closeSize : 0,
-      realizedPnl: closeUsd - base.totalInvested,
+      realizedPnl: closeUsd - totalBought,
       closedAt: (row.closed_at as string | null) ?? null,
       traderAddress: (row.trader_address as string) ?? '',
       traderName: (row.trader_name as string) ?? '',
     };
   });
+}
+
+/** Cached version of getClosedPositions — called 3x per refresh cycle, only hits DB once per 5s. */
+let _closedCache: { data: ClosedPositionRow[]; ts: number } | null = null;
+const CLOSED_CACHE_TTL_MS = 5_000;
+
+export function getClosedPositionsCached(limit = 10000): ClosedPositionRow[] {
+  const now = Date.now();
+  if (_closedCache && (now - _closedCache.ts) < CLOSED_CACHE_TTL_MS) {
+    return limit < _closedCache.data.length ? _closedCache.data.slice(0, limit) : _closedCache.data;
+  }
+  const data = getClosedPositions(10000);
+  _closedCache = { data, ts: now };
+  return limit < data.length ? data.slice(0, limit) : data;
 }
 
 /**
@@ -429,6 +453,70 @@ export function getOpeningTraderForToken(
     )
     .get(tokenId) as { address: string; name: string } | undefined;
   return row;
+}
+
+/** Batch: get the earliest BUY trader for multiple tokens in a single query. */
+export function getOpeningTradersForTokens(
+  tokenIds: string[],
+): Map<string, { address: string; name: string }> {
+  const result = new Map<string, { address: string; name: string }>();
+  if (tokenIds.length === 0) return result;
+  const placeholders = tokenIds.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(
+      `SELECT t.token_id, t.trader_address AS address, t.trader_name AS name
+       FROM trades t
+       INNER JOIN (
+         SELECT token_id, MIN(timestamp) AS min_ts
+         FROM trades
+         WHERE token_id IN (${placeholders}) AND side = 'BUY'
+         GROUP BY token_id
+       ) e ON t.token_id = e.token_id AND t.timestamp = e.min_ts AND t.side = 'BUY'`,
+    )
+    .all(...tokenIds) as Array<{ token_id: string; address: string; name: string }>;
+  for (const r of rows) {
+    result.set(r.token_id, { address: r.address, name: r.name });
+  }
+  return result;
+}
+
+/** Batch: get market cache entries for multiple condition IDs in a single query. */
+export function getMarketCacheBatch(
+  conditionIds: string[],
+): Map<string, MarketCache> {
+  const result = new Map<string, MarketCache>();
+  if (conditionIds.length === 0) return result;
+  const placeholders = conditionIds.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(`SELECT * FROM markets_cache WHERE condition_id IN (${placeholders})`)
+    .all(...conditionIds) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const mc = mapMarketCacheRow(row);
+    result.set(mc.conditionId, mc);
+  }
+  return result;
+}
+
+/** Batch: count open positions per trader for multiple addresses in a single query. */
+export function countOpenPositionsFromTraders(
+  addresses: string[],
+): Map<string, number> {
+  const result = new Map<string, number>();
+  if (addresses.length === 0) return result;
+  const placeholders = addresses.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(
+      `SELECT t.trader_address, COUNT(DISTINCT p.token_id) AS cnt
+       FROM positions p
+       JOIN trades t ON t.token_id = p.token_id AND t.side = 'BUY'
+       WHERE p.status = 'open' AND t.trader_address IN (${placeholders})
+       GROUP BY t.trader_address`,
+    )
+    .all(...addresses) as Array<{ trader_address: string; cnt: number }>;
+  for (const r of rows) {
+    result.set(r.trader_address, r.cnt);
+  }
+  return result;
 }
 
 export function markPositionRedeemed(tokenId: string): void {
@@ -1616,8 +1704,8 @@ export function getTraderAnalytics(): TraderAnalyticsRow[] {
     )
     .all() as Array<Record<string, unknown>>;
 
-  // Step 2: enrich with closed position stats (already computed by getClosedPositions)
-  const closed = getClosedPositions(10000);
+  // Step 2: enrich with closed position stats (cached — called 3x per refresh cycle)
+  const closed = getClosedPositionsCached(10000);
   const traderClosedStats = new Map<string, { wins: number; losses: number; pnl: number; count: number }>();
   for (const cp of closed) {
     const addr = cp.traderAddress;
@@ -1629,7 +1717,10 @@ export function getTraderAnalytics(): TraderAnalyticsRow[] {
     traderClosedStats.set(addr, entry);
   }
 
-  // Step 3: open position counts per trader (from already-indexed countOpenPositionsFromTrader)
+  // Step 3: open position counts per trader (single batch query instead of N+1)
+  const addresses = rows.map((r) => r.address as string);
+  const openCountMap = countOpenPositionsFromTraders(addresses);
+
   const result = rows.map((row) => {
     const addr = row.address as string;
     const cs = traderClosedStats.get(addr);
@@ -1647,7 +1738,7 @@ export function getTraderAnalytics(): TraderAnalyticsRow[] {
       totalPnl: cs?.pnl ?? 0,
       avgReturn: 0,
       slippageAvg: row.slippage_avg as number,
-      openPositions: countOpenPositionsFromTrader(addr),
+      openPositions: openCountMap.get(addr) ?? 0,
       closedPositions: cs?.count ?? 0,
       openInvested: 0,
     };

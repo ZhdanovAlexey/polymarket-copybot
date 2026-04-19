@@ -82,15 +82,18 @@ async function refreshAll() {
   if (_refreshInFlight) return;
   _refreshInFlight = true;
   try {
+    // All endpoints are now DB-only (no external API calls), run in parallel.
+    // Positions settles first so refreshTraders can use lastOpenPositions.
     await Promise.allSettled([
+      refreshPositions(),
       refreshStatus(),
       refreshMetrics(),
-      refreshTraders(),
       refreshTrades(),
-      refreshPositions(),
       refreshClosedPositions(),
       refreshChart(),
     ]);
+    // Traders depends on lastOpenPositions (set by refreshPositions)
+    await refreshTraders();
   } finally {
     _refreshInFlight = false;
   }
@@ -156,7 +159,7 @@ async function refreshMetrics() {
 async function refreshTraders() {
   try {
     const data = await fetchJson('/api/traders');
-    updateTraders(data);
+    updateTraders(data, lastOpenPositions);
   } catch (err) {
     console.error('Failed to fetch traders:', err);
   }
@@ -346,13 +349,32 @@ function initChart() {
         {
           label: 'P&L',
           data: [],
-          borderColor: '#58a6ff',
-          backgroundColor: 'rgba(88, 166, 255, 0.1)',
           borderWidth: 2,
-          fill: true,
+          fill: 'origin',
           tension: 0.3,
           pointRadius: 0,
           pointHitRadius: 8,
+          segment: {
+            borderColor: (ctx) => {
+              // Color each segment based on the values at its endpoints
+              const p0 = ctx.p0.parsed.y;
+              const p1 = ctx.p1.parsed.y;
+              if (p0 >= 0 && p1 >= 0) return '#3fb950';
+              if (p0 < 0 && p1 < 0) return '#f85149';
+              // Crossing zero — blend (use the endpoint color)
+              return p1 >= 0 ? '#3fb950' : '#f85149';
+            },
+            backgroundColor: (ctx) => {
+              const p0 = ctx.p0.parsed.y;
+              const p1 = ctx.p1.parsed.y;
+              if (p0 >= 0 && p1 >= 0) return 'rgba(63, 185, 80, 0.15)';
+              if (p0 < 0 && p1 < 0) return 'rgba(248, 81, 73, 0.15)';
+              return p1 >= 0 ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)';
+            },
+          },
+          // Fallback colors (used for legend / tooltip swatch)
+          borderColor: '#3fb950',
+          backgroundColor: 'rgba(63, 185, 80, 0.15)',
         },
       ],
     },
@@ -372,7 +394,11 @@ function initChart() {
           titleColor: '#e6edf3',
           bodyColor: '#8b949e',
           callbacks: {
-            label: (ctx) => `P&L: $${ctx.parsed.y.toFixed(2)}`,
+            label: (ctx) => {
+              const v = ctx.parsed.y;
+              const sign = v >= 0 ? '+' : '-';
+              return `P&L: ${sign}$${Math.abs(v).toFixed(2)}`;
+            },
           },
         },
       },
@@ -456,16 +482,6 @@ async function refreshChart() {
       return rounded.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     });
     pnlChart.data.datasets[0].data = points.map((p) => p.pnl);
-
-    // Color the fill based on final value
-    const lastPnl = points.length > 0 ? points[points.length - 1].pnl : 0;
-    if (lastPnl >= 0) {
-      pnlChart.data.datasets[0].borderColor = '#3fb950';
-      pnlChart.data.datasets[0].backgroundColor = 'rgba(63, 185, 80, 0.1)';
-    } else {
-      pnlChart.data.datasets[0].borderColor = '#f85149';
-      pnlChart.data.datasets[0].backgroundColor = 'rgba(248, 81, 73, 0.1)';
-    }
 
     pnlChart.update();
   } catch (err) {

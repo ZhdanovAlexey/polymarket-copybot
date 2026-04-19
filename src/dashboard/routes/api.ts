@@ -51,9 +51,11 @@ apiRouter.get('/status', (_req, res) => {
 apiRouter.get('/traders', (_req, res) => {
   try {
     const traders = queries.getTrackedForPolling();
+    // Batch: 1 query instead of 12x countOpenPositionsFromTrader
+    const countMap = queries.countOpenPositionsFromTraders(traders.map((t) => t.address));
     const enriched = traders.map((t) => ({
       ...t,
-      openPositionsCount: queries.countOpenPositionsFromTrader(t.address),
+      openPositionsCount: countMap.get(t.address) ?? 0,
     }));
     res.json(enriched);
   } catch (err) {
@@ -118,7 +120,7 @@ apiRouter.get('/traders/:address/positions', (req, res) => {
       .map((p) => ({ ...p, status: 'open' as const, realizedPnl: 0, closedAt: null }));
 
     // Closed positions for this trader
-    const allClosed = queries.getClosedPositions(10000);
+    const allClosed = queries.getClosedPositionsCached(10000);
     const closedPositions = allClosed.filter((p) => p.traderAddress === address);
 
     res.json({ open: openPositions, closed: closedPositions });
@@ -195,7 +197,7 @@ apiRouter.get('/metrics', (_req, res) => {
     // per-SELL heuristic because it (a) uses our actual cost basis rather
     // than trader's original price, (b) counts REDEEM outcomes, (c) handles
     // positions with multiple partial sells correctly.
-    const closedRoundTrips = queries.getClosedPositions(10000);
+    const closedRoundTrips = queries.getClosedPositionsCached(10000);
     const wins = closedRoundTrips.filter((p) => p.realizedPnl > 0).length;
     const losses = closedRoundTrips.filter((p) => p.realizedPnl <= 0).length;
     const totalClosedCount = closedRoundTrips.length;
@@ -246,56 +248,35 @@ apiRouter.get('/metrics', (_req, res) => {
   }
 });
 
-// GET /api/positions (enriched with current prices + market dates)
-apiRouter.get('/positions', async (_req, res) => {
+// GET /api/positions (enriched with cached prices + market dates)
+// Prices are updated in the background by bot's markToMarket() every 60s.
+// This endpoint reads from DB only — no external API calls.
+apiRouter.get('/positions', (_req, res) => {
   try {
     const positions = queries.getAllOpenPositions();
 
-    // Fetch current prices in parallel
-    const { ClobClientWrapper } = await import('../../api/clob-client.js');
-    const clob = new ClobClientWrapper();
-    const enriched = await Promise.all(
-      positions.map(async (p) => {
-        const opener = queries.getOpeningTraderForToken(p.tokenId);
-        const traderAddress = opener?.address ?? '';
-        const traderName = opener?.name ?? '';
+    // Batch lookups: 2 queries instead of 66 (33 x trader + 33 x cache)
+    const tokenIds = positions.map((p) => p.tokenId);
+    const conditionIds = [...new Set(positions.map((p) => p.conditionId).filter(Boolean))] as string[];
+    const openerMap = queries.getOpeningTradersForTokens(tokenIds);
+    const cacheMap = queries.getMarketCacheBatch(conditionIds);
 
-        // Market dates from cache (lazy-fill from CLOB if missing)
-        let endDate: string | null = null;
-        let gameStartTime: string | null = null;
-        if (p.conditionId) {
-          const cache = queries.getMarketCache(p.conditionId);
-          endDate = cache?.endDate ?? null;
-          gameStartTime = cache?.gameStartTime ?? null;
-          // If game_start_time is missing, fetch from CLOB and cache
-          if (!gameStartTime) {
-            try {
-              const mkt = await clob.getMarketByConditionId(p.conditionId);
-              if (mkt) {
-                endDate = mkt.end_date_iso ?? endDate;
-                gameStartTime = mkt.game_start_time ?? null;
-                queries.upsertMarketCache({
-                  conditionId: p.conditionId,
-                  endDate,
-                  gameStartTime,
-                });
-              }
-            } catch { /* non-fatal */ }
-          }
-        }
+    const enriched = positions.map((p) => {
+      const opener = openerMap.get(p.tokenId);
+      const traderAddress = opener?.address ?? '';
+      const traderName = opener?.name ?? '';
+      const cache = p.conditionId ? cacheMap.get(p.conditionId) : undefined;
+      const endDate = cache?.endDate ?? null;
+      const gameStartTime = cache?.gameStartTime ?? null;
 
-        try {
-          const curPrice = await clob.getMidpoint(p.tokenId);
-          // Persist MTM price so executor budget calc uses fresh data
-          queries.setPositionPrice(p.tokenId, curPrice, Math.floor(Date.now() / 1000));
-          const currentValue = p.totalShares * curPrice;
-          const pnl = currentValue - p.totalInvested;
-          return { ...p, curPrice, currentValue, pnl, traderAddress, traderName, endDate, gameStartTime };
-        } catch {
-          return { ...p, curPrice: null, currentValue: null, pnl: null, traderAddress, traderName, endDate, gameStartTime };
-        }
-      }),
-    );
+      const curPrice = p.currentPrice ?? null;
+      if (curPrice != null) {
+        const currentValue = p.totalShares * curPrice;
+        const pnl = currentValue - p.totalInvested;
+        return { ...p, curPrice, currentValue, pnl, traderAddress, traderName, endDate, gameStartTime };
+      }
+      return { ...p, curPrice: null, currentValue: null, pnl: null, traderAddress, traderName, endDate, gameStartTime };
+    });
 
     res.json(enriched);
   } catch (err) {
@@ -383,7 +364,7 @@ apiRouter.post('/positions/:tokenId/close', async (req, res) => {
 apiRouter.get('/positions/closed', (req, res) => {
   try {
     const limit = parseInt(req.query.limit as string) || 200;
-    const rows = queries.getClosedPositions(limit);
+    const rows = queries.getClosedPositionsCached(limit);
     res.json(rows);
   } catch (err) {
     log.error({ err }, 'Failed to get closed positions');

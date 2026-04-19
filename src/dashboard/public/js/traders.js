@@ -86,15 +86,16 @@ export function initTraders() {
 
 /* ---- Data fetching ---- */
 
+// Shared positions cache — set by updateTraders() from app.js to avoid
+// a duplicate /api/positions fetch (positions already fetched by refreshPositions).
+let _sharedPositions = [];
+
 async function refreshAnalytics() {
   try {
-    const [analytics, positions] = await Promise.all([
-      fetch('/api/traders/analytics').then((r) => r.json()),
-      fetch('/api/positions').then((r) => r.json()),
-    ]);
+    const analytics = await fetch('/api/traders/analytics').then((r) => r.json());
     if (Array.isArray(analytics)) {
-      // Compute unrealized PnL per trader from positions data
-      const posArr = Array.isArray(positions) ? positions : [];
+      // Compute unrealized PnL per trader from shared positions data
+      const posArr = _sharedPositions;
       const traderUnrealized = {};
       for (const p of posArr) {
         const addr = p.traderAddress;
@@ -113,9 +114,11 @@ async function refreshAnalytics() {
 }
 
 /**
- * Legacy compat — called from app.js polling. Triggers analytics refresh.
+ * Called from app.js polling with positions data already fetched.
+ * Caches positions and triggers analytics refresh (fetches only /api/traders/analytics).
  */
-export function updateTraders(_traders) {
+export function updateTraders(_traders, positions) {
+  if (Array.isArray(positions)) _sharedPositions = positions;
   refreshAnalytics();
 }
 

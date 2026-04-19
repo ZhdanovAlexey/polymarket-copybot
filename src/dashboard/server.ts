@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
@@ -15,6 +16,7 @@ const log = createLogger('dashboard');
 export function createDashboardServer(): express.Express {
   const app = express();
 
+  app.use(compression());
   app.use(express.json());
 
   // CORS for local dev
@@ -32,9 +34,9 @@ export function createDashboardServer(): express.Express {
   app.use('/api/backtest', backtestRouter);
   app.use('/api/export', exportRouter);
 
-  // Static files
+  // Static files (1h cache for CSS/JS — fingerprinted by browser via ETag)
   const publicDir = resolve(__dirname, 'public');
-  app.use(express.static(publicDir));
+  app.use(express.static(publicDir, { maxAge: '1h', etag: true }));
 
   // SPA fallback (Express 5 requires named wildcard)
   app.get('/{*path}', (req, res) => {

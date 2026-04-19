@@ -89,6 +89,7 @@ function renderTable() {
         t.side,
         t.status,
         t.error,
+        t.reason,
       ]
         .filter(Boolean)
         .join(' ')
@@ -121,7 +122,7 @@ function renderTable() {
       <td>$${Number(t.totalUsd || 0).toFixed(2)}</td>
       <td>$${Number(t.commission || 0).toFixed(2)}</td>
       <td><span class="status-pill ${t.status}"${t.error ? ` title="${escapeHtml(t.error)}"` : ''}>${t.status}</span></td>
-      <td class="trade-reason" title="${escapeHtml(t.error || '')}">${t.error ? escapeHtml(truncate(t.error, 60)) : '\u2014'}</td>
+      <td class="trade-reason" title="${escapeHtml(t.error || '')}">${formatReason(t.reason, t.error)}</td>
     </tr>`,
     )
     .join('');
@@ -132,7 +133,7 @@ function renderTable() {
 function exportCsv() {
   if (allTrades.length === 0) return;
 
-  const header = ['Time', 'Trader', 'Address', 'Market', 'Side', 'Outcome', 'Size', 'Price', 'Total USD', 'Fee', 'Status', 'Reason'];
+  const header = ['Time', 'Trader', 'Address', 'Market', 'Side', 'Outcome', 'Size', 'Price', 'Total USD', 'Fee', 'Status', 'Reason', 'Error'];
   const rows = allTrades.map((t) => [
     t.timestamp,
     t.traderName,
@@ -145,6 +146,7 @@ function exportCsv() {
     t.totalUsd,
     t.commission || 0,
     t.status,
+    t.reason || 'copy',
     `"${(t.error || '').replace(/"/g, '""')}"`,
   ]);
 
@@ -212,6 +214,26 @@ function truncateName(name) {
     return name.slice(0, 6) + '\u2026' + name.slice(-4);
   }
   return name.slice(0, 14) + '\u2026';
+}
+
+const reasonLabels = {
+  copy: 'Copy',
+  stop_loss: 'Stop Loss',
+  trailing_stop: 'Trailing Stop',
+  anomaly: 'Anomaly',
+  manual: 'Manual',
+  redeem: 'Redeem',
+  take_profit: 'Take Profit',
+  scale_out: 'Scale Out',
+};
+
+function formatReason(reason, error) {
+  const label = reasonLabels[reason] || (reason ? escapeHtml(reason) : null);
+  if (error) {
+    const errorText = escapeHtml(truncate(error, 50));
+    return label ? `${label} \u00b7 ${errorText}` : errorText;
+  }
+  return label || '\u2014';
 }
 
 function escapeHtml(str) {

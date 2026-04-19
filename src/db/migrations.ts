@@ -254,6 +254,12 @@ const MIGRATIONS: string[] = [
     liquidity REAL,
     cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`,
+
+  // Performance indexes for trades (114K+ rows, previously unindexed)
+  `CREATE INDEX IF NOT EXISTS idx_trades_token_id_side ON trades(token_id, side)`,
+  `CREATE INDEX IF NOT EXISTS idx_trades_trader_address ON trades(trader_address)`,
+  `CREATE INDEX IF NOT EXISTS idx_trades_token_id_status ON trades(token_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)`,
 ];
 
 export function runMigrations(db: Database.Database): void {
