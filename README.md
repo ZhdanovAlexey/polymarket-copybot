@@ -1,28 +1,60 @@
-# PolyMarket CopyBot PRO v2.0
+<p align="center">
+  <h1 align="center">PolyMarket CopyBot PRO</h1>
+  <p align="center">
+    Autonomous copy-trading bot for <a href="https://polymarket.com">Polymarket</a> prediction markets<br/>
+    with a real-time web dashboard, strategy intelligence, and Telegram alerts
+  </p>
+  <p align="center">
+    <a href="#quick-start">Quick Start</a> &bull;
+    <a href="#features">Features</a> &bull;
+    <a href="#architecture">Architecture</a> &bull;
+    <a href="#configuration">Configuration</a> &bull;
+    <a href="#api-reference">API</a>
+  </p>
+  <p align="center">
+    <img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"/>
+    <img alt="Node" src="https://img.shields.io/badge/node-18%2B-brightgreen.svg"/>
+    <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-blue.svg"/>
+    <img alt="Polygon" src="https://img.shields.io/badge/chain-Polygon-8247e5.svg"/>
+  </p>
+</p>
 
-Autonomous copy-trading bot for PolyMarket with professional web dashboard, strategy intelligence, and Telegram notifications.
+---
+
+## What is this?
+
+CopyBot monitors the top-performing traders on Polymarket, scores them with a composite algorithm, and automatically mirrors their trades in real time. It ships with a full-featured dark-theme dashboard for monitoring P&L, managing positions, and tuning strategy parameters — no terminal needed after initial setup.
+
+**Demo mode** is enabled by default: paper-trade with a virtual balance to evaluate the system risk-free before connecting a real wallet.
+
+> **Disclaimer:** This software is provided for educational and research purposes. Trading prediction markets involves financial risk. Use at your own discretion and never trade with funds you cannot afford to lose.
+
+---
 
 ## Features
 
-- **Copy Trading** — automatically mirrors trades from top PolyMarket traders
-- **Smart Scoring** — composite trader scoring (PnL 40%, win rate 25%, volume 15%, trades 10%, consistency 10%)
-- **Risk Management** — daily loss limits, max drawdown, position limits, slippage control
-- **Web Dashboard** — real-time dark-theme SPA with Chart.js analytics
-- **Setup Wizard** — browser-based wallet setup, no terminal needed
-- **Strategy Intelligence** — performance attribution, auto-rotation, backtesting, Kelly Criterion optimizer, anomaly detection
-- **Telegram Notifications** — trade alerts, daily summaries, risk warnings
-- **Demo Account** — paper trading with virtual balance, commission tracking, and account reset
-- **Auto-Redeem** — automatically claims winnings from resolved markets
+| Category | Details |
+|---|---|
+| **Copy Trading** | Mirrors BUY/SELL from top-N traders. Proportional or fixed bet sizing. Exit-only mode for dropped traders. |
+| **Trader Scoring** | Composite: PnL 40% + Win Rate 25% + Volume 15% + Trades 10% + Consistency 10%. Negative PnL uses signed-log penalty. |
+| **Risk Management** | Daily loss limit, max drawdown (EWMA-adaptive), position limits, slippage control, concentration checks, stop-loss (fixed + trailing). |
+| **Strategy Layer** | Performance attribution, auto-rotation with probation, backtesting engine, Kelly Criterion optimizer, anomaly detection, adaptive weights, correlation filter. |
+| **Web Dashboard** | Real-time SPA: P&L chart, open/closed positions, trader leaderboard, trade log with search/filter, settings modal, setup wizard. |
+| **Demo Account** | Virtual balance, simulated commissions, market redemption, full reset — identical UX to live mode. |
+| **Auto-Redeem** | Automatically claims winnings when markets resolve (on-chain in live mode, simulated in demo). |
+| **Telegram** | Trade alerts, daily P&L summaries, risk warnings, anomaly notifications. |
+| **Execution** | TWAP slicing, liquidity depth checks, trade queue with dedup and TTL, adaptive slippage. |
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
-- Node.js 18+
-- pnpm
-- Polygon wallet with MATIC (gas) and USDC.e (trading)
+- **Node.js 18+** and **pnpm**
+- For live trading: a Polygon wallet with MATIC (gas) and USDC.e (trading capital)
 
-### Installation
+### Install & Run
 
 ```bash
 git clone https://github.com/ZhdanovAlexey/polymarket-copybot.git
@@ -32,7 +64,9 @@ cp .env.example .env
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) — Setup Wizard will guide you through wallet connection.
+Open **http://localhost:3000** — the Setup Wizard will guide you through configuration.
+
+Demo mode is on by default (`DRY_RUN=true`). No wallet needed to try it out.
 
 ### Docker
 
@@ -40,263 +74,262 @@ Open [http://localhost:3000](http://localhost:3000) — Setup Wizard will guide 
 docker compose up -d
 ```
 
+Dashboard will be available on port 3000. Data persists in `./data/`.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `pnpm dev` | Run in development mode (tsx), dashboard on :3000 |
+| `pnpm build` | Compile TypeScript to `dist/` |
+| `pnpm start` | Run compiled JS (production) |
+
 ---
 
 ## Architecture
 
-### High-level overview
+### System Overview
 
 ```
-                    ┌──────────────────────────────────────────────────┐
-                    │                  Web Dashboard                    │
-                    │  (Express + Vanilla HTML/CSS/JS + Chart.js)      │
-                    │                                                   │
-                    │  Setup Wizard ─── Settings ─── Trade Log         │
-                    │  Metric Cards ─── P&L Chart ─── Positions        │
-                    │  Trader Cards ─── Live Feed ─── Backtest UI      │
-                    └────────────┬──────────────┬──────────────────────┘
-                                 │  REST API     │  SSE (real-time)
-                                 ▼              ▼
-┌─────────────┐    ┌─────────────────────────────────────────────────┐
-│ PolyMarket  │◄──►│                   Bot Core                      │
-│ APIs        │    │                                                  │
-│             │    │  ┌──────────┐  ┌─────────┐  ┌──────────────┐   │
-│ Data API    │◄───│──│Leaderboard│─►│ Tracker │─►│  Executor    │   │
-│ Gamma API   │    │  │(scoring)  │  │(polling)│  │(buy/sell)    │   │
-│ CLOB API    │◄───│──│           │  │         │  │              │   │
-│             │    │  └──────────┘  └────┬────┘  └──────┬───────┘   │
-│ Polygon RPC │    │                     │              │            │
-└─────────────┘    │              ┌──────▼──────┐ ┌─────▼────────┐  │
-                   │              │ Anomaly     │ │ Risk Manager │  │
-                   │              │ Detector    │ │ (limits,     │  │
-                   │              │ (alerts)    │ │  slippage)   │  │
-                   │              └─────────────┘ └──────────────┘  │
-                   │                                                 │
-                   │  ┌──────────────────────────────────────────┐  │
-                   │  │           Strategy Layer                  │  │
-                   │  │  Performance ── Rotation ── Optimizer     │  │
-                   │  │  Backtester ── Anomaly Detector           │  │
-                   │  └──────────────────────────────────────────┘  │
-                   │                                                 │
-                   │  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
-                   │  │Portfolio │  │ Redeemer  │  │  Telegram  │  │
-                   │  │(positions)│  │(auto-claim)│  │(notify)    │  │
-                   │  └──────┬───┘  └───────────┘  └────────────┘  │
-                   └─────────┼──────────────────────────────────────┘
-                             │
-                    ┌────────▼────────┐
-                    │   SQLite (DB)    │
-                    │   10 tables      │
-                    │   better-sqlite3 │
-                    └──────────────────┘
+                    +--------------------------------------------------+
+                    |                  Web Dashboard                    |
+                    |  Express + Vanilla HTML/CSS/JS + Chart.js        |
+                    |                                                   |
+                    |  Setup Wizard --- Settings --- Trade Log          |
+                    |  Metric Cards --- P&L Chart --- Positions         |
+                    |  Trader Board --- Live Feed --- Backtest UI       |
+                    +--------+-----------------------+-----------------+
+                             |  REST API             |  SSE (real-time)
+                             v                       v
++---------------+  +---------------------------------------------------+
+| Polymarket    |  |                   Bot Core                        |
+| APIs          |  |                                                   |
+|               |  |  Leaderboard ---> Tracker ---> Executor           |
+| Data API    <-+--+  (scoring)        (polling)    (buy/sell)         |
+| Gamma API     |  |                      |              |             |
+| CLOB API    <-+--+                      v              v             |
+|               |  |              Anomaly Detector  Risk Manager       |
+| Polygon RPC   |  |                                                   |
++---------------+  |  Strategy Layer                                   |
+                   |    Performance | Rotation | Optimizer | Backtest  |
+                   |                                                   |
+                   |  Portfolio --- Redeemer --- Telegram               |
+                   +----------+------------------------------------+---+
+                              |                                    |
+                     +--------v--------+              +------------v--+
+                     |   SQLite (DB)   |              | Polygon Chain |
+                     |   20 tables     |              | (live mode)   |
+                     +--+--------------+              +---------------+
 ```
 
-### Data flow — trade lifecycle
+### Trade Lifecycle
 
 ```
 1. Leaderboard.refresh()
-   ├── Data API: GET /leaderboard → top traders
-   ├── Data API: GET /trades/{addr} → win rate per trader
-   ├── Score = PnL×0.4 + WinRate×0.25 + Volume×0.15 + Trades×0.1 + Consistency×0.1
-   └── Save top N to DB (tracked_traders table)
+   +-- Data API: fetch top traders
+   +-- Score = PnL*0.4 + WinRate*0.25 + Volume*0.15 + Trades*0.1 + Consistency*0.1
+   +-- Save top N to DB
 
-2. Tracker.pollOnce() — every POLL_INTERVAL_MS (default 30s)
-   ├── For each tracked trader:
-   │   └── Data API: GET /activity?user={addr}&type=TRADE&start={lastTs}
-   ├── Deduplicate by tx hash (Set + DB check)
-   ├── Emit 'newTrade' event (DetectedTrade)
-   └── Update lastSeenTimestamp in DB
+2. Tracker.pollOnce()  (every 30-60s)
+   +-- For each tracked trader: fetch recent activity
+   +-- Dedup by tx hash
+   +-- Emit 'newTrade' event
 
-3. Bot.handleNewTrade(trade)
-   ├── AnomalyDetector.analyze(trade) → alert only (Telegram + SSE)
-   ├── RiskManager.canTrade(trade)
-   │   ├── Daily P&L limit check
-   │   ├── Max open positions check
-   │   └── Min trade size check
-   ├── Executor.executeBuy/Sell(trade)
-   │   ├── CLOB API: GET /midpoint → current price
-   │   ├── RiskManager.checkSlippage(current, trader price)
-   │   ├── If DRY_RUN: simulate, status='simulated'
-   │   └── If REAL: ClobClient.createAndPostOrder() → poll status
-   ├── Portfolio.updateAfterBuy/Sell(result)
-   ├── DB: insertTrade(result)
-   ├── SSE: broadcastEvent('trade', result)
-   └── Telegram: notifyTradeCopied(result)
+3. Bot.handleNewTrade()
+   +-- Anomaly check (alert only)
+   +-- Risk checks (daily limit, max positions, drawdown, concentration)
+   +-- Execute via CLOB API (or simulate in demo mode)
+   +-- Update portfolio, notify via SSE + Telegram
 ```
 
-### Module structure
+### Project Structure
 
 ```
-polymarket-copybot/
-├── src/
-│   ├── index.ts                         # Entry point: init DB, start dashboard, create Bot
-│   ├── config.ts                        # dotenv + zod validation → AppConfig
-│   ├── types.ts                         # ALL shared interfaces (contract for all modules)
-│   │
-│   ├── api/                             # External API wrappers
-│   │   ├── data-api.ts                  # DataApi: leaderboard, activity, positions, trades
-│   │   ├── gamma-api.ts                 # GammaApi: market metadata, events
-│   │   └── clob-client.ts              # ClobClientWrapper (public) + initClobClientWithAuth()
-│   │
-│   ├── core/                            # Business logic
-│   │   ├── bot.ts                       # Bot orchestrator: start/stop, wire all subsystems
-│   │   ├── leaderboard.ts              # Fetch + score + filter traders
-│   │   ├── tracker.ts                  # Poll trader activity, emit newTrade events
-│   │   ├── executor.ts                 # Execute BUY/SELL (demo account + real via CLOB)
-│   │   ├── risk-manager.ts            # Daily limit, max positions, slippage, liquidity
-│   │   ├── portfolio.ts               # Track positions, update after trades
-│   │   ├── redeemer.ts                # Auto-redeem resolved markets via CTF contract
-│   │   └── strategy/                   # Strategy intelligence
-│   │       ├── performance.ts          # P&L attribution per trader, auto-drop
-│   │       ├── rotation.ts            # Periodic trader rotation with probation
-│   │       ├── backtest.ts            # Historical simulation engine
-│   │       ├── optimizer.ts           # Kelly Criterion, adaptive slippage, drawdown scaling
-│   │       └── anomaly.ts            # Detect unusual trade patterns (alerts only)
-│   │
-│   ├── dashboard/                       # Web UI
-│   │   ├── server.ts                   # Express app: static files, route mounting
-│   │   ├── routes/
-│   │   │   ├── api.ts                  # REST: status, traders, trades, metrics, settings, bot control
-│   │   │   ├── auth.ts                # Wallet connect, derive keys, approve, preflight
-│   │   │   ├── sse.ts                 # Server-Sent Events: broadcastEvent()
-│   │   │   ├── backtest.ts           # Async backtest run + status + results
-│   │   │   └── export.ts             # CSV export
-│   │   └── public/
-│   │       ├── index.html             # SPA with all sections
-│   │       ├── css/styles.css         # Dark theme (CSS vars)
-│   │       └── js/
-│   │           ├── app.js             # Main: init, refresh loop, positions
-│   │           ├── dashboard.js       # 4 metric cards
-│   │           ├── traders.js         # Trader cards
-│   │           ├── trades.js          # Trade log table with search/filter
-│   │           ├── charts.js          # Chart.js P&L timeline
-│   │           ├── sse-client.js      # EventSource with auto-reconnect
-│   │           └── settings.js        # Setup Wizard (4 steps) + settings modal
-│   │
-│   ├── db/                              # SQLite layer
-│   │   ├── database.ts                 # Singleton, init, close
-│   │   ├── migrations.ts              # 10 tables (CREATE IF NOT EXISTS)
-│   │   └── queries.ts                 # Typed wrappers for all tables
-│   │
-│   ├── notifications/
-│   │   └── telegram.ts                # 8 notification templates (HTML format)
-│   │
-│   └── utils/
-│       ├── logger.ts                   # pino: console + file, child logger factory
-│       ├── retry.ts                    # Exponential backoff with 429/5xx handling
-│       └── helpers.ts                  # formatUsd, sleep, generateId, shortenAddress
-│
-├── scripts/
-│   └── check-balance.ts                # CLI: show wallet MATIC + USDC balances
-├── data/                                # Runtime: copybot.db, copybot.log (gitignored)
-├── Dockerfile
-├── docker-compose.yml
-└── POLYMARKET_COPYBOT_TZ.md           # Original specification (v2.0)
+src/
+  index.ts                  Entry point
+  config.ts                 dotenv + zod validation
+  types.ts                  Shared interfaces
+
+  api/
+    data-api.ts             Polymarket Data API (public)
+    gamma-api.ts            Polymarket Gamma API (public)
+    clob-client.ts          CLOB API wrapper + auth
+
+  core/
+    bot.ts                  Orchestrator: start/stop, wire subsystems
+    leaderboard.ts          Fetch + score + rank traders
+    tracker.ts              Poll trader activity, emit events
+    executor.ts             Execute BUY/SELL (demo + live)
+    risk-manager.ts         Limits, slippage, drawdown checks
+    portfolio.ts            Position tracking, mark-to-market
+    redeemer.ts             Auto-redeem resolved markets
+    stop-loss-monitor.ts    Fixed + trailing stop-loss
+    drawdown-monitor.ts     Rolling drawdown with EWMA
+    health-checker.ts       CLOB ping, circuit breaker
+    execution/
+      trade-queue.ts        Concurrency-limited queue with dedup
+      twap.ts               TWAP slicing with drift guard
+      liquidity.ts          Order-book depth, adaptive slippage
+    strategy/
+      performance.ts        P&L attribution per trader
+      rotation.ts           Periodic trader rotation
+      backtest.ts           Historical simulation engine
+      optimizer.ts          Kelly Criterion parameter tuning
+      anomaly.ts            Unusual trade pattern detection
+      adaptive-weights.ts   EWMA-based weight recalculation
+      correlation.ts        Pairwise correlation filter
+      conviction-store.ts   Conviction-based bet sizing
+
+  dashboard/
+    server.ts               Express: compression, static, routes
+    routes/
+      api.ts                REST endpoints (batch-optimized)
+      auth.ts               Wallet setup flow
+      sse.ts                Server-Sent Events
+      backtest.ts           Async backtest runner
+      export.ts             CSV export
+    public/                 Vanilla HTML/CSS/JS frontend
+
+  db/
+    database.ts             SQLite singleton (better-sqlite3)
+    migrations.ts           20 tables, indexed
+    queries.ts              Typed query wrappers
+
+  notifications/
+    telegram.ts             8 notification templates
 ```
-
-### Database schema (SQLite, 10 tables)
-
-
-| Table                | Purpose                            | Key columns                                                |
-| -------------------- | ---------------------------------- | ---------------------------------------------------------- |
-| `settings`           | Key-value config store             | key, value                                                 |
-| `tracked_traders`    | Monitored traders + scores         | address, score, pnl, win_rate, probation                   |
-| `trades`             | All bot trades                     | side, status (filled/simulated/failed/skipped), is_dry_run, commission |
-| `positions`          | Open positions                     | token_id, total_shares, avg_price, status                  |
-| `pnl_snapshots`      | Periodic P&L for charts            | total_pnl, realized, unrealized                            |
-| `activity_log`       | Audit trail                        | type (trade/redeem/start/stop/error), message              |
-| `trader_performance` | P&L attribution per trader per day | wins, losses, total_pnl, slippage_avg                      |
-| `rotation_log`       | Trader swap history                | old_trader, new_trader, reason                             |
-| `backtest_results`   | Saved backtest runs                | config (JSON), equity_curve (JSON), sharpe                 |
-| `anomaly_log`        | Detected anomalies                 | type (size/market/frequency), severity                     |
-
-
-### API endpoints
-
-
-| Endpoint                             | Method   | Description                                |
-| ------------------------------------ | -------- | ------------------------------------------ |
-| `/api/status`                        | GET      | Bot status, uptime, version                |
-| `/api/traders`                       | GET      | Active tracked traders                     |
-| `/api/trades?limit=&offset=&status=` | GET      | Trade history with filters                 |
-| `/api/metrics`                       | GET      | P&L, win rate, trade counts                |
-| `/api/positions`                     | GET      | Open positions                             |
-| `/api/pnl-history?period=`           | GET      | P&L snapshots for chart                    |
-| `/api/activity?type=&limit=`         | GET      | Activity log                               |
-| `/api/bot/start`                     | POST     | Start the bot                              |
-| `/api/bot/stop`                      | POST     | Stop the bot                               |
-| `/api/settings`                      | GET/POST | Read/write bot settings                    |
-| `/api/auth/connect-wallet`           | POST     | Submit private key, get address + balances |
-| `/api/auth/derive-keys`              | POST     | Derive CLOB API credentials                |
-| `/api/auth/approve-usdc`             | POST     | Approve USDC spending                      |
-| `/api/auth/approve-ctf`              | POST     | Approve CTF token transfers                |
-| `/api/auth/preflight`                | GET      | Pre-launch readiness check                 |
-| `/api/auth/balance`                  | GET      | Current USDC + MATIC balances (or demo)    |
-| `/api/demo/reset`                    | POST     | Reset demo account to initial balance      |
-| `/api/sse`                           | GET      | Server-Sent Events stream                  |
-| `/api/backtest/run`                  | POST     | Start async backtest                       |
-| `/api/backtest/status?id=`           | GET      | Backtest progress                          |
-| `/api/backtest/results`              | GET      | List saved backtests                       |
-| `/api/backtest/result/:id`           | GET      | Single backtest result                     |
-| `/api/strategy/recommendations`      | GET      | Optimizer suggestions                      |
-| `/api/strategy/anomalies`            | GET      | Anomaly alerts                             |
-| `/api/strategy/performance`          | GET      | Per-trader performance                     |
-| `/api/strategy/rotations`            | GET      | Trader rotation history                    |
-| `/api/export/trades`                 | GET      | CSV download                               |
-
-
-### Technology stack
-
-
-| Component       | Technology                          |
-| --------------- | ----------------------------------- |
-| Language        | TypeScript (ESM, strict)            |
-| Runtime         | Node.js 18+                         |
-| Package manager | pnpm                                |
-| Trading SDK     | @polymarket/clob-client + ethers v5 |
-| Web server      | Express 5                           |
-| Real-time       | Server-Sent Events (SSE)            |
-| Frontend        | Vanilla HTML/CSS/JS (no framework)  |
-| Charts          | Chart.js (CDN)                      |
-| Database        | SQLite via better-sqlite3           |
-| Logging         | pino + pino-pretty                  |
-| Config          | dotenv + zod validation             |
-| Notifications   | node-telegram-bot-api               |
-
-
-### Smart contracts (Polygon)
-
-
-| Contract                 | Address                                      |
-| ------------------------ | -------------------------------------------- |
-| CTF Exchange             | `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E` |
-| Neg Risk Exchange        | `0xC5d563A36AE78145C45a50134d48A1215220f80a` |
-| CTF (Conditional Tokens) | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` |
-| USDC.e                   | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` |
-| Neg Risk Adapter         | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` |
-
 
 ---
 
 ## Configuration
 
-See `.env.example` for all options. Key settings:
+All settings are configurable via `.env`, the web dashboard Settings panel, or the Setup Wizard.
 
+See [`.env.example`](.env.example) for the full list. Key settings:
 
-| Variable               | Default | Description                       |
-| ---------------------- | ------- | --------------------------------- |
-| `DRY_RUN`              | `true`  | Demo mode with virtual balance    |
-| `DEMO_INITIAL_BALANCE_USD` | `1000` | Starting demo balance (USD)   |
-| `DEMO_COMMISSION_PCT`  | `2`     | Simulated taker fee (%)           |
-| `BET_SIZE_USD`         | `5`     | Amount per copied trade           |
-| `TOP_TRADERS_COUNT`    | `10`    | How many traders to track         |
-| `POLL_INTERVAL_MS`     | `30000` | How often to check for new trades |
-| `MAX_SLIPPAGE_PCT`     | `5`     | Max allowed slippage %            |
-| `DAILY_LOSS_LIMIT_USD` | `50`    | Stop bot if daily loss exceeds    |
-| `MAX_OPEN_POSITIONS`   | `10`    | Position limit                    |
-| `DASHBOARD_PORT`       | `3000`  | Web UI port                       |
+| Variable | Default | Description |
+|---|---|---|
+| `DRY_RUN` | `true` | Demo mode (paper trading) |
+| `BET_SIZE_USD` | `5` | Amount per copied trade |
+| `TOP_TRADERS_COUNT` | `10` | Number of traders to track |
+| `POLL_INTERVAL_MS` | `30000` | Trade check interval (ms) |
+| `MAX_SLIPPAGE_PCT` | `5` | Max allowed slippage % |
+| `DAILY_LOSS_LIMIT_USD` | `50` | Daily loss limit |
+| `MAX_OPEN_POSITIONS` | `10` | Position limit |
+| `DASHBOARD_PORT` | `3000` | Web UI port |
+| `TELEGRAM_ENABLED` | `false` | Enable Telegram notifications |
 
+---
+
+## API Reference
+
+All endpoints are prefixed with `/api`.
+
+### Bot Control
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/status` | GET | Bot status, uptime, version, demo balance |
+| `/bot/start` | POST | Start the bot |
+| `/bot/stop` | POST | Stop the bot |
+| `/bot/refresh-leaderboard` | POST | Force leaderboard refresh |
+| `/demo/reset` | POST | Reset demo account |
+
+### Data
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/traders` | GET | Active + exit-only traders |
+| `/traders/analytics` | GET | Per-trader stats (My Leaderboard) |
+| `/trades?limit=&offset=&status=` | GET | Trade history with filters |
+| `/metrics` | GET | P&L, win rate, trade counts |
+| `/positions` | GET | Open positions (cached prices) |
+| `/positions/closed?limit=` | GET | Closed position round-trips |
+| `/pnl-history?period=` | GET | P&L snapshots for chart |
+| `/activity?type=&limit=` | GET | Activity log |
+
+### Wallet Setup
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/auth/connect-wallet` | POST | Submit private key |
+| `/auth/derive-keys` | POST | Derive CLOB API credentials |
+| `/auth/approve-usdc` | POST | Approve USDC spending |
+| `/auth/approve-ctf` | POST | Approve CTF transfers |
+| `/auth/preflight` | GET | Pre-launch readiness check |
+| `/auth/balance` | GET | Wallet balances |
+
+### Strategy
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/strategy/recommendations` | GET | Optimizer suggestions |
+| `/strategy/anomalies` | GET | Anomaly alerts |
+| `/strategy/performance` | GET | Per-trader performance |
+| `/strategy/rotations` | GET | Rotation history |
+| `/conviction-params` | GET/POST | Conviction scoring parameters |
+
+### Other
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/settings` | GET/POST | Read/write bot settings |
+| `/sse` | GET | Server-Sent Events stream |
+| `/backtest/run` | POST | Start async backtest |
+| `/backtest/results` | GET | Saved backtest results |
+| `/export/trades` | GET | CSV download |
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Language | TypeScript (ESM, strict mode) |
+| Runtime | Node.js 18+ |
+| Web Server | Express 5 |
+| Database | SQLite via better-sqlite3 |
+| Frontend | Vanilla HTML/CSS/JS, Chart.js |
+| Real-time | Server-Sent Events (SSE) |
+| Trading | @polymarket/clob-client + ethers v5 |
+| Chain | Polygon (MATIC) |
+| Notifications | Telegram (node-telegram-bot-api) |
+| Config | dotenv + zod validation |
+| Logging | pino |
+
+---
+
+## Database
+
+20 tables in SQLite. Key ones:
+
+| Table | Purpose |
+|---|---|
+| `settings` | Key-value config store |
+| `tracked_traders` | Monitored traders with scores |
+| `trades` | All executed/simulated trades |
+| `positions` | Open + closed positions |
+| `pnl_snapshots` | Periodic snapshots for P&L chart |
+| `trader_performance` | Per-trader daily P&L attribution |
+| `rotation_log` | Trader swap history |
+| `anomaly_log` | Detected anomalies |
+| `markets_cache` | Cached market metadata |
+| `conviction_params` | Conviction scoring state |
+
+---
+
+## Smart Contracts (Polygon Mainnet)
+
+| Contract | Address |
+|---|---|
+| CTF Exchange | `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E` |
+| Neg Risk Exchange | `0xC5d563A36AE78145C45a50134d48A1215220f80a` |
+| Conditional Tokens | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` |
+| USDC.e | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` |
+| Neg Risk Adapter | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` |
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE)

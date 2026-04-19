@@ -9,9 +9,9 @@
     "build": "tsc && cp -r src/dashboard/public dist/dashboard/public",
     "start": "node dist/index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["polymarket", "copy-trading", "prediction-markets", "trading-bot", "polygon", "dashboard"],
+  "author": "Alexey Zhdanov",
+  "license": "MIT",
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
     "@polymarket/clob-client": "^5.8.1",
