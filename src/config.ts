@@ -108,6 +108,9 @@ const configSchema = z.object({
   maxPairwiseCorrelation: z.coerce.number().default(0.7),
   minResolvedTradesForRealWinRate: z.coerce.number().default(10),
 
+  // Market filter — exclude categories by slug/title keywords (comma-separated)
+  marketExcludeKeywords: z.string().default(''),
+
   // Execution — TWAP
   twapThresholdUsd: z.coerce.number().default(50),
   twapSlices: z.coerce.number().default(3),
@@ -320,6 +323,7 @@ export function reloadConfigFromDb(getSetting: (key: string) => string | undefin
     anomalyActionSize: 'anomaly_action_size',
     anomalyActionMarket: 'anomaly_action_market',
     anomalyActionFrequency: 'anomaly_action_frequency',
+    marketExcludeKeywords: 'market_exclude_keywords',
   };
 
   const boolMap: Record<string, string> = {

@@ -1013,6 +1013,20 @@ export class Executor {
    * Process a detected trade (route to buy or sell)
    */
   async processTrade(trade: DetectedTrade): Promise<TradeResult> {
+    // Market category filter — skip BUYs on excluded markets (SELLs still allowed
+    // so we can exit positions opened before the filter was enabled).
+    if (trade.action === 'buy' && config.marketExcludeKeywords) {
+      const slug = (trade.marketSlug + ' ' + trade.marketTitle).toLowerCase();
+      const excluded = config.marketExcludeKeywords
+        .split(',')
+        .map((k) => k.trim().toLowerCase())
+        .filter(Boolean);
+      const matched = excluded.find((kw) => slug.includes(kw));
+      if (matched) {
+        return this.createResult(trade, 'BUY', 'skipped', 0, 0, 0, `market_excluded:${matched}`);
+      }
+    }
+
     // If trader is halted due to anomaly, skip new BUYs (SELLs still allowed).
     if (trade.action === 'buy' && queries.isTraderHalted(trade.traderAddress)) {
       log.info(

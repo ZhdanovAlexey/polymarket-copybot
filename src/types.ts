@@ -300,6 +300,8 @@ export interface AppConfig {
   blacklistDays: number;
   maxPairwiseCorrelation: number;
   minResolvedTradesForRealWinRate: number;
+  // Market filter
+  marketExcludeKeywords: string;
   // Execution — TWAP
   twapThresholdUsd: number;
   twapSlices: number;
