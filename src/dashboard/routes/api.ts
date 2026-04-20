@@ -202,30 +202,40 @@ apiRouter.get('/metrics', (_req, res) => {
     const losses = closedRoundTrips.filter((p) => p.realizedPnl <= 0).length;
     const totalClosedCount = closedRoundTrips.length;
 
-    // Realized P&L across all closed round-trips (matches the Closed
-    // Positions table total).
-    const realizedPnl = closedRoundTrips.reduce((s, p) => s + p.realizedPnl, 0);
-
-    // In demo mode derive total P&L from balance delta - locked-in invested
-    // (matches the pnl_snapshots series driving the chart)
+    // Unrealized P&L: mark-to-market on open positions (same formula as
+    // savePnlSnapshot in bot.ts — fall back to totalInvested when no
+    // current_price yet so the delta is 0, not NaN).
     const lockedInOpen = positions.reduce((s, p) => s + (p.totalInvested ?? 0), 0);
+    const unrealizedPnl = positions.reduce((s, p) => {
+      const mtm = p.currentPrice != null
+        ? p.totalShares * p.currentPrice
+        : p.totalInvested;
+      return s + (mtm - (p.totalInvested ?? 0));
+    }, 0);
+
+    // Realized P&L: in demo mode the balance already reflects all
+    // commissions, so derive from balance delta + locked-in invested.
+    // This matches the pnl_snapshots "realizedPnl" exactly.
     const demoInitial = parseFloat(
       queries.getSetting('demo_initial_balance') ?? String(config.demoInitialBalanceUsd),
     );
-    const totalPnlDemo = config.dryRun
+    const realizedPnl = config.dryRun
       ? queries.getDemoBalance() - demoInitial + lockedInOpen
-      : realizedPnl - totalCommission;
+      : closedRoundTrips.reduce((s, p) => s + p.realizedPnl, 0) - totalCommission;
+
+    // Total P&L = realized + unrealized (matches the snapshot series
+    // driving the chart, so card and chart always agree).
+    const totalPnl = realizedPnl + unrealizedPnl;
 
     // Today P&L = currentTotalPnl − firstSnapshot-of-today.totalPnl.
-    // Matches the chart (snapshots use the same formula). If no snapshot
-    // exists yet for today, fall back to 0 (bot just started).
+    // Both sides now use the same formula (realized + unrealized).
     const todayBaseline = queries.getTodayBaselineSnapshot();
-    const todayPnl = todayBaseline ? totalPnlDemo - todayBaseline.totalPnl : 0;
+    const todayPnl = todayBaseline ? totalPnl - todayBaseline.totalPnl : 0;
 
     const response: Record<string, unknown> = {
-      totalPnl: totalPnlDemo,
+      totalPnl,
       realizedPnl,
-      unrealizedPnl: 0,
+      unrealizedPnl,
       lockedInOpen,
       winRate: totalClosedCount > 0 ? wins / totalClosedCount : 0,
       wins,
