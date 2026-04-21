@@ -18,6 +18,8 @@ export class TradeQueue {
   private droppedStale = 0;
   /** tokenIds with a SELL currently being executed — prevents race-condition duplicates */
   private sellInFlight = new Set<string>();
+  /** tokenIds with a BUY currently being executed — prevents concurrent duplicate copies */
+  private buyInFlight = new Set<string>();
 
   constructor(private processor: (trade: DetectedTrade) => Promise<TradeResult | void>) {}
 
@@ -42,6 +44,20 @@ export class TradeQueue {
       }
       if (this.queue.some((q) => q.trade.action === 'sell' && q.trade.tokenId === trade.tokenId)) {
         log.info({ tokenId: trade.tokenId, tradeId: trade.id }, 'SELL already queued, dropping duplicate');
+        return;
+      }
+    }
+
+    // Dedup BUYs the same way: a trader's single action can produce
+    // multiple Data API entries (partial fills). With concurrent execution
+    // both copies pass the executor's 60s cooldown simultaneously.
+    if (trade.action === 'buy' && trade.tokenId) {
+      if (this.buyInFlight.has(trade.tokenId)) {
+        log.info({ tokenId: trade.tokenId, tradeId: trade.id }, 'BUY already in-flight, dropping duplicate');
+        return;
+      }
+      if (this.queue.some((q) => q.trade.action === 'buy' && q.trade.tokenId === trade.tokenId)) {
+        log.info({ tokenId: trade.tokenId, tradeId: trade.id }, 'BUY already queued, dropping duplicate');
         return;
       }
     }
@@ -120,16 +136,23 @@ export class TradeQueue {
     const item = this.queue.shift()!;
     this.activeCount++;
 
-    // Track in-flight SELL to prevent concurrent duplicate execution
+    // Track in-flight trades to prevent concurrent duplicate execution
     const isSell = item.trade.action === 'sell' && !!item.trade.tokenId;
+    const isBuy = item.trade.action === 'buy' && !!item.trade.tokenId;
     if (isSell) {
       this.sellInFlight.add(item.trade.tokenId);
+    }
+    if (isBuy) {
+      this.buyInFlight.add(item.trade.tokenId);
     }
 
     this.processor(item.trade)
       .finally(() => {
         if (isSell) {
           this.sellInFlight.delete(item.trade.tokenId);
+        }
+        if (isBuy) {
+          this.buyInFlight.delete(item.trade.tokenId);
         }
         this.activeCount--;
         this.processNext();
